@@ -1,0 +1,90 @@
+---
+title: "bic_comparison"
+author: "Jackie Beltrán"
+date: "2023-09-29"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+# libraries
+```{r setup, include=FALSE}
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+library(ggpubr)
+library(data.table)
+library(reshape2)
+library(tidyverse)
+library(rstatix)
+
+```
+
+# load data
+```{r}
+getwd()
+
+setwd('/Users/jackiebeltran/Documents/modeling/results/')
+
+data = read.csv('N77_bic_comparison.csv')
+```
+
+# paired samples t test
+https://www.datanovia.com/en/lessons/t-test-in-r/#pstt
+http://www.sthda.com/english/wiki/paired-samples-t-test-in-r#visualize-your-data-and-compute-paired-t-test-in-r
+Are the average bics different between model1 and model2 across all subjects?
+
+```{r}
+
+# preproc
+bic_long <- data %>% gather(key = "bic", value = "value", BIC_model1, BIC_model2)
+head(bic_long, 3)
+str(bic_long)
+bic_long$subject <- as.factor(bic_long$subject)
+
+# summary stats 
+bic_long %>%
+  group_by(bic) %>%
+  get_summary_stats(value, type = "mean_sd")
+
+## visualizing the paired BICs 
+bxp <- ggpaired(bic_long, x = "bic", y = "value", 
+         order = c("BIC_model1", "BIC_model2"),
+         ylab = "BIC", xlab = "")
+bxp
+
+# box plot
+ggboxplot(bic_long, x = "bic", y = "value", color = "bic",
+          order = c("BIC_model1", "BIC_model2"), palette= c("#00AFBB", "#E7B800"),
+          ylab = "BIC", xlab = "Model")
+
+# get bic difference
+data <- data %>% mutate(bic_diff = BIC_model2 - BIC_model1)
+head(data, 3)
+
+# Shapiro-Wilk normality test for the differences shows data are NOT normally distributed but bc N > 30 we're okay
+data %>% shapiro_test(bic_diff) # p = 0.000137
+
+# t test
+stat.test <- bic_long  %>% 
+  t_test(value ~ bic, paired = TRUE) %>%
+  add_significance()
+stat.test # t = -2.04, p = 0.045, no significant difference between the two BICs
+
+# wilcox
+# res <- wilcox.test(value ~ bic, data = bic_long, paired= TRUE)
+# res # p = 0.1289 # 
+
+# effect size 
+bic_long  %>% cohens_d(value ~ bic, paired = TRUE) # small effect size
+
+stat.test <- stat.test %>% add_xy_position(x = "model")
+
+bxp + 
+  stat_pvalue_manual(stat.test, tip.length = 0) +
+  labs(subtitle = get_test_label(stat.test, detailed= TRUE))
+
+```
+
+
+

@@ -1,0 +1,571 @@
+---
+title: "roi_assess"
+author: "Jackie Beltrán"
+date: "2024-02-18"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+# libraries
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+require(ggplot2)
+require(tidyr)
+require(dplyr)
+require(ggpubr)
+require(data.table)
+require(tidyr)
+require(patchwork)
+require(ppcor)
+```
+
+# Data
+```{r load data}
+getwd()
+
+roi <- read.csv('../../../../RL/data/roi_N74.csv') # roi extraction for each subj
+
+assess <- read.csv('../../../../RL/data/K01_tracking_covs.csv') 
+
+```
+
+# preproc
+
+```{r preproc assess}
+
+ca_sub <- assess %>% dplyr::select('K01_SUBID', 'TEPS.Anticipatory', 'TEPS.Consummatory',
+                                   'qids_score','RRS_Depression.Related',
+                                   'BAS.Reward.Responsiveness..K.only.', 'BIS_score',
+                                   'shaps_score..new.')
+
+# rename column to then merge datasets
+names(ca_sub)[names(ca_sub) == "K01_SUBID"] <- "subj_ID"
+
+df_full <- merge(roi, ca_sub)
+```
+
+```{r covariates}
+covs <- assess %>% dplyr::select('K01_SUBID', 'SUB_gender', 'SUB_Age', 'Medication')
+
+# rename column
+names(covs)[names(covs) == "K01_SUBID"] <- "subj_ID"
+
+# merge
+df_covs <- merge(df_full, covs)
+length(unique(df_covs$subj_ID)) # N = 74
+
+df_covs$subj_ID <- as.factor(df_covs$subj_ID)
+df_covs$group<- as.factor(df_covs$group)
+df_covs$SUB_gender <- as.factor(df_covs$SUB_gender)
+
+# recode variables
+df_covs <- df_covs %>% mutate(SUB_gender=recode(SUB_gender, 'F'='1', 'M'='0')) # dummy code sex
+df_covs <- df_covs %>% mutate(Medication=recode(Medication, '0'='1', '1'='2')) # 1 = none, 2 = y
+df_covs$SUB_gender <- as.numeric(df_covs$SUB_gender)
+df_covs$Medication <- as.numeric(df_covs$Medication)
+df_covs2 <- na.omit(df_covs) # remove nan
+
+```
+
+```{r roi}
+roi_m <-
+  reshape2::melt(roi,
+                 id = c('subj_ID', 'group', 'ROI'),
+                 variable.name = "contrast")
+
+roi_out_3 <- roi_m %>%
+  group_by(group, contrast, ROI) %>%
+  mutate(
+    mean_value = mean(value),
+    sd_value = sd(value),
+    is_outlier = value > (mean_value + 3 * sd_value) |
+      value < (mean_value - 3 * sd_value)
+  )
+
+# Identify outliers 
+outliers_3 <- roi_out_3 %>% filter(is_outlier == T)
+
+# View the outliers
+print(outliers_3)
+
+roi_o <-
+  anti_join(roi_out_3,
+            outliers_3,
+            by = c("subj_ID", "group", "contrast", "ROI", "value")) %>%
+  dplyr::select("subj_ID", "group", "ROI", "contrast", "value")
+
+roi_o_w <- reshape2::dcast(roi_o, subj_ID + group + ROI ~ contrast)
+roi_o_w <- roi_o_w[order(roi_o_w$ROI, roi_o_w$subj_ID),]
+
+col_order <-
+  c(
+    "group",
+    "subj_ID",
+    "stimGain",
+    "stimLoss",
+    "stimNeutral",
+    "keyGo",
+    "fb_loss_rpe",
+    "fb_gain_rpe",
+    "fb_all_rpe",
+    "ROI"
+  )
+
+roi_o_w <- roi_o_w[, col_order]
+
+```
+
+```{r outlier free roi + regular assessments}
+
+df_o <- merge(roi_o_w, ca_sub)
+
+```
+
+
+# VTA
+```{r}
+vta_ca <- df_full[df_full$ROI == "vta_mni", ]
+```
+
+```{r}
+ggplot(vta_ca, aes(x=qids_score, y=fb_all_rpe, color=group)) +
+  geom_point(size = 5) + 
+  geom_smooth(method=lm, aes(fill=group), se = FALSE) + 
+  scale_color_manual(values=c('lightblue3','burlywood2')) + 
+  labs(x='Qids score', y='VTA RPE', title='') +
+  theme_light() +
+  theme(axis.text = element_text(size = 16)) + 
+  theme(legend.position=c(0.1,0.9), legend.justification=c(0.1,0.9)) 
+
+```
+
+## qids
+```{r}
+mdd <- vta_ca[vta_ca$group == "MDD", ] # N=38
+hc <- vta_ca[vta_ca$group == "HC", ] # N=36
+
+shapiro.test(mdd$fb_all_rpe) # p = 0.2738
+shapiro.test(mdd$qids_score) # p = 0.1872
+
+ggqqplot(mdd$fb_all_rpe, ylab = "fb all rpe") # some drift near the tails but okay
+ggqqplot(mdd$qids_score, ylab = "qids")
+
+cor.test(mdd$fb_all_rpe, mdd$qids_score, 
+                    method = "pearson") # p = 0.5032
+
+cor.test(mdd$fb_gain_rpe, mdd$qids_score, 
+                    method = "pearson") # p = 0.7691
+
+cor.test(mdd$fb_loss_rpe, mdd$qids_score, 
+                    method = "pearson") # p = 0.6248
+```
+
+## BAS - reward responsiveness
+
+```{r}
+ggplot(vta_ca, aes(x=fb_gain_rpe, y=BAS.Reward.Responsiveness..K.only., color=group)) +
+  geom_point(size = 5) + 
+  geom_smooth(method=lm, aes(fill=group), se = FALSE) + 
+  scale_color_manual(values=c('lightblue3','burlywood2')) + 
+  labs(x='VTA gain RPE', y='Reward Responsiveness', title='') +
+  theme_light() +
+  theme(axis.text = element_text(size = 16)) + 
+  theme(legend.position=c(2.0,0.9), legend.justification=c(0.1,0.9)) 
+
+```
+
+```{r mdd}
+shapiro.test(mdd$fb_all_rpe) # p = 0.2738
+shapiro.test(mdd$BAS.Reward.Responsiveness..K.only.) # p = 0.1474
+
+ggqqplot(mdd$fb_all_rpe, ylab = "fb all rpe") # some drift near the tails but okay
+ggqqplot(mdd$BAS.Reward.Responsiveness..K.only., ylab = "qids")
+
+cor.test(mdd$fb_all_rpe, mdd$BAS.Reward.Responsiveness..K.only., 
+                    method = "pearson") # p = 0.1034
+
+cor.test(hc$fb_gain_rpe, hc$BAS.Reward.Responsiveness..K.only., 
+                    method = "pearson") # p = 0.6378
+
+cor.test(mdd$fb_loss_rpe, mdd$BAS.Reward.Responsiveness..K.only., 
+                    method = "pearson") # p = 0.02889 # SIG
+
+```
+
+```{r partial correlation}
+pcor_test(
+  df = df_covs2,
+  roi = "vta_mni",
+  contrast = "fb_all_rpe",
+  scale = "BAS.Reward.Responsiveness..K.only.",
+  group_col = "group",
+  sex_col = "SUB_gender"
+) # MDD: R = 0.2862177, p = 0.096, HC: rho = 0.2484045, p =0.150186
+
+pcor_test(
+  df = df_covs2,
+  roi = "vta_mni",
+  contrast = "fb_gain_rpe",
+  scale = "BAS.Reward.Responsiveness..K.only.",
+  group_col = "group",
+  sex_col = "SUB_gender"
+) # MDD: R = 0.0789, p = 0.653, HC: rho = 0.155, p = 0.373
+
+pcor_test(
+  df = df_covs2,
+  roi = "vta_mni",
+  contrast = "fb_loss_rpe",
+  scale = "BAS.Reward.Responsiveness..K.only.",
+  group_col = "group",
+  sex_col = "SUB_gender"
+) # MDD: R = 0.372, p = 0.0279, HC: -0.062, p = 0.725
+```
+
+```{r add age and meds as covar}
+
+vta_sub <- df_covs2 %>% filter(ROI == "vta_mni" & group == "MDD") 
+vta_sub <- df_covs2 %>% filter(ROI == "vta_mni" & group == "HC") 
+
+pcor.test(
+  vta_sub$BAS.Reward.Responsiveness..K.only.,
+  vta_sub$fb_all_rpe,
+  list(vta_sub$SUB_gender, vta_sub$SUB_Age, vta_sub$Medication)
+  ) # R = 0.287, p = 0.106
+
+pcor.test(
+  vta_sub$BAS.Reward.Responsiveness..K.only.,
+  vta_sub$fb_gain_rpe,
+  list(vta_sub$SUB_gender, vta_sub$SUB_Age, vta_sub$Medication)
+  ) # R = -0.045, p = 0.804
+
+pcor.test(
+  vta_sub$BAS.Reward.Responsiveness..K.only.,
+  vta_sub$fb_loss_rpe,
+  list(vta_sub$SUB_gender, vta_sub$SUB_Age, vta_sub$Medication),
+  ) # R = 0.351, p = 0.0451
+```
+
+```{r hcc}
+shapiro.test(hc$fb_all_rpe) # p = 0.03308
+shapiro.test(hc$BAS.Reward.Responsiveness..K.only.) # p = 0.02521
+
+ggqqplot(hc$fb_all_rpe, ylab = "fb all rpe") # some drift near the tails but okay
+ggqqplot(hc$BAS.Reward.Responsiveness..K.only., ylab = "bas")
+
+cor.test(hc$fb_all_rpe, hc$BAS.Reward.Responsiveness..K.only., 
+                    method = "spearman") # p ~ 0.2721 (ties)
+
+cor.test(hc$fb_gain_rpe, hc$BAS.Reward.Responsiveness..K.only., 
+                    method = "spearman") # p ~ 0.5632 (ties)
+
+cor.test(hc$fb_loss_rpe, hc$BAS.Reward.Responsiveness..K.only., 
+                    method = "spearman") # p = 0.6985 
+
+```
+
+## BAS - BIS Score
+
+```{r}
+ggplot(mdd, aes(x=fb_all_rpe, y=BIS_score, color=group)) +
+  geom_point(size = 5) + 
+  geom_smooth(method=lm, aes(fill=group), se = FALSE) + 
+  scale_color_manual(values=c('lightblue3','burlywood2')) + 
+  labs(x='VTA RPE', y='BIS Score', title='') +
+  theme_light() +
+  theme(axis.text = element_text(size = 16)) + 
+  theme(legend.position=c(2.0,0.9), legend.justification=c(0.1,0.9)) 
+
+ggplot(mdd, aes(x=fb_gain_rpe, y=BIS_score, color=group)) +
+  geom_point(size = 5) + 
+  geom_smooth(method=lm, aes(fill=group), se = FALSE) + 
+  scale_color_manual(values=c('lightblue3','burlywood2')) + 
+  labs(x='VTA gain RPE', y='BIS Score', title='') +
+  theme_light() +
+  theme(axis.text = element_text(size = 16)) + 
+  theme(legend.position=c(2.0,0.9), legend.justification=c(0.1,0.9)) # this looks maybe sig.
+
+
+ggplot(mdd, aes(x=fb_loss_rpe, y=BIS_score, color=group)) +
+  geom_point(size = 5) + 
+  geom_smooth(method=lm, aes(fill=group), se = FALSE) + 
+  scale_color_manual(values=c('lightblue3','burlywood2')) + 
+  labs(x='VTA loss RPE', y='BIS Score', title='') +
+  theme_light() +
+  theme(axis.text = element_text(size = 16)) + 
+  theme(legend.position=c(2.0,0.9), legend.justification=c(0.1,0.9)) 
+
+```
+
+## RRS depression related 
+
+```{r}
+shapiro.test(mdd$fb_all_rpe) # p = 0.2738
+shapiro.test(mdd$RRS_Depression.Related) # p = 0.1658
+
+ggqqplot(mdd$fb_all_rpe, ylab = "fb all rpe") # some drift near the tails but okay
+ggqqplot(mdd$RRS_Depression.Related, ylab = "RRS")
+
+cor.test(mdd$fb_all_rpe, mdd$RRS_Depression.Related, 
+                    method = "pearson") # p = 0.9107
+
+cor.test(mdd$fb_gain_rpe, mdd$RRS_Depression.Related, 
+                    method = "pearson") # p = 0.5281
+
+cor.test(mdd$fb_loss_rpe, mdd$RRS_Depression.Related, 
+                    method = "pearson") # p = 0.5145 
+
+```
+
+## shaps
+The items cover the domains of: social interaction, food and drink, sensory experience, and interest/pastimes. A score of 2 or less constitutes a “normal” score, while an “abnormal” score is defined as 3 or more. Each item has four possible responses: strongly disagree, disagree, agree, or strongly agree. 
+- Someone with a high SHAPS score would also have low hedonic tone, or reduced ability to feel pleasure (https://www.verywellhealth.com/snaith-hamilton-pleasure-scale-5272382)
+- 1 point = disagrees/strongly disagrees with a statement. 0 points = agrees or strongly agree
+- Lower SHAPS scores indicate higher levels of hedonic capacity or a lower level of anhedonia
+
+mdd: 
+- correlation with loss rpe
+- trending with full rpe such that greater signal = higher shaps score
+
+```{r mdd}
+ggplot(mdd, aes(x=fb_all_rpe, y=shaps_score..new., color=group)) +
+  geom_point(size = 5) + 
+  geom_smooth(method=lm, aes(fill=group), se = FALSE) + 
+  scale_color_manual(values=c('lightblue3','burlywood2')) + 
+  labs(x='VTA RPE', y='shaps', title='') +
+  theme_light() +
+  theme(axis.text = element_text(size = 16)) + 
+  theme(legend.position=c(2.0,0.9), legend.justification=c(0.1,0.9)) 
+
+shapiro.test(mdd$fb_all_rpe) # p = 0.2738
+shapiro.test(mdd$fb_gain_rpe) # p = 0.7654
+shapiro.test(mdd$fb_loss_rpe) # p = 0.6714
+shapiro.test(mdd$shaps_score..new.) # p = 0.7385
+
+ggqqplot(mdd$fb_all_rpe, ylab = "fb all rpe") # some drift near the tails but okay
+ggqqplot(mdd$shaps_score..new., ylab = "shaps")
+
+cor.test(mdd$fb_all_rpe, mdd$shaps_score..new., 
+                    method = "pearson") # p = 0.06486, R = 0.3025374 -- TRENDING
+
+cor.test(mdd$fb_gain_rpe, mdd$shaps_score..new., 
+                    method = "pearson") # p = 0.9482
+
+cor.test(mdd$fb_loss_rpe, mdd$shaps_score..new., 
+                    method = "pearson") # p = 0.04756, R = 0.32  -- SIG
+
+
+```
+
+## outliers
+```{r check for outliers}
+
+shaps <-
+  df_full %>% dplyr::select('subj_ID', 'group', 'shaps_score..new.') %>%
+  distinct() # two MDD subjects missing a score
+
+# mean HC = 18.1(4.67), mean MDD = 32.1(8.36)
+
+shaps_m <-
+  reshape2::melt(shaps,
+                 id = c('subj_ID', 'group'),
+                 variable.name = "shaps")
+
+shaps_m %>% 
+  group_by(group, shaps) %>%
+  summarise(mean_score = mean(value), sd_score= sd(value))
+
+
+shaps_out_3 <- shaps_m %>%
+  group_by(group, shaps) %>%
+  mutate(
+    mean_value = mean(value),
+    sd_value = sd(value),
+    is_outlier = value > (mean_value + 3 * sd_value) |
+      value < (mean_value - 3 * sd_value)
+  )
+
+# Identify outliers 
+shaps_outliers <- shaps_out_3 %>% filter(is_outlier == T) # no outliers!!
+
+```
+
+```{r repeat analysis without roi outliers}
+
+vta_o <- df_o[df_o$ROI == "vta_mni", ] # outlier during loss rpe 
+mdd <- vta_o[vta_o$group == "MDD", ]
+
+shapiro.test(mdd$fb_loss_rpe) # p = 0.6714
+shapiro.test(mdd$shaps_score..new.) # p = 0.7385
+
+ggqqplot(mdd$fb_loss_rpe, ylab = "fb loss rpe") # some drift near the tails but okay
+ggqqplot(mdd$shaps_score..new., ylab = "shaps")
+
+cor.test(mdd$fb_loss_rpe, mdd$shaps_score..new., 
+                    method = "pearson") # p = 0.04756, R = 0.3235128 -- SIG with outlier removal
+
+
+```
+
+
+# BAS outlier detection 
+- we remove outliers and end up with a dataframe called BAS_df
+```{r}
+BAS <-
+  df_full %>% dplyr::select('subj_ID', 'group', 'BAS.Reward.Responsiveness..K.only.') %>%
+  distinct() # two MDD subjects missing a score
+
+BAS_2 <- na.omit(BAS)
+
+# mean HC = 7.92(1.65), mean MDD = 10.3(3.00)
+
+bas_m <-
+  reshape2::melt(BAS_2,
+                 id = c('subj_ID', 'group'),
+                 variable.name = "BAS")
+
+bas_m %>% 
+  group_by(group, BAS) %>%
+  summarise(mean_score = mean(value), sd_score= sd(value))
+
+```
+
+```{r boxplot}
+ggplot(bas_m, aes(x = BAS, y = value, fill = group)) +
+  geom_boxplot(outlier.shape = 19) +
+    geom_dotplot(binaxis='y', stackdir='center',
+                 position=position_dodge(0.9), dotsize = 0.3) +
+  
+  scale_fill_manual(values=c('lightblue3','peachpuff')) +
+
+  #facet_wrap(~ROI, scales = "free_y") +
+  labs(title = "",
+       x = "",
+       y = "score") +
+  theme_minimal() + 
+    theme(
+    # axis.text = element_text(size = 15),
+    axis.title = element_text(size = 15),
+    strip.text = element_text(size = 12),
+    legend.title = element_blank(),
+    legend.text = element_text(size=15),
+  )
+```
+
+```{r outlier removal}
+
+bas_out_3 <- bas_m %>%
+  group_by(group, BAS) %>%
+  mutate(
+    mean_value = mean(value),
+    sd_value = sd(value),
+    is_outlier = value > (mean_value + 3 * sd_value) |
+      value < (mean_value - 3 * sd_value)
+  )
+
+# Identify outliers 
+bas_outliers <- bas_out_3 %>% filter(is_outlier == T) # no outliers!!
+```
+
+# NAc
+```{r}
+nac_ca <- df_full[df_full$ROI == "rl_accumbens", ]
+mdd <- nac_ca[nac_ca$group == "MDD", ] # N=38
+hc <- nac_ca[nac_ca$group == "HC", ] # N=36
+
+```
+
+## BAS - reward responsiveness
+
+In HC, greater RPE signal during loss trials is trending in correlation with greater reward responsiveness 
+```{r}
+ggplot(nac_ca, aes(x=fb_loss_rpe, y=BAS.Reward.Responsiveness..K.only., color=group)) +
+  geom_point(size = 5) + 
+  geom_smooth(method=lm, aes(fill=group), se = FALSE) + 
+  scale_color_manual(values=c('lightblue3','burlywood2')) + 
+  labs(x='NAC Loss RPE', y='BAS score', title='') +
+  theme_light() +
+  theme(axis.text = element_text(size = 16)) + 
+  theme(legend.position=c(0.1,0.9), legend.justification=c(0.1,0.9)) 
+
+```
+
+```{r mdd}
+
+shapiro.test(mdd$fb_all_rpe) # p = 0.8932
+shapiro.test(mdd$fb_loss_rpe) # p = 0.3136
+shapiro.test(mdd$fb_gain_rpe) # p = 0.5061
+shapiro.test(mdd$BAS.Reward.Responsiveness..K.only.) # p = 0.1474
+
+ggqqplot(mdd$fb_all_rpe, ylab = "fb all rpe")
+ggqqplot(mdd$fb_loss_rpe, ylab = "fb loss rpe") # good 
+ggqqplot(mdd$fb_gain_rpe, ylab = "fb gain rpe") # good
+ggqqplot(mdd$BAS.Reward.Responsiveness..K.only., ylab = "BAS")
+
+cor.test(mdd$fb_all_rpe, mdd$BAS.Reward.Responsiveness..K.only., 
+                    method = "pearson") # p = 0.3839
+
+cor.test(mdd$fb_gain_rpe, mdd$BAS.Reward.Responsiveness..K.only., 
+                    method = "pearson") # p = 0.3307
+
+cor.test(mdd$fb_loss_rpe, mdd$BAS.Reward.Responsiveness..K.only., 
+                    method = "pearson") # p = 0.6843
+
+```
+
+```{r hc}
+shapiro.test(hc$fb_all_rpe) # p = 0.004828
+shapiro.test(hc$fb_loss_rpe) # p = 0.02489
+shapiro.test(hc$fb_gain_rpe) # p = 0.9262
+shapiro.test(hc$BAS.Reward.Responsiveness..K.only.) # p = 0.02521
+
+ggqqplot(hc$fb_all_rpe, ylab = "fb all rpe") # drift at the tails
+ggqqplot(hc$fb_loss_rpe, ylab = "fb loss rpe") # drift at the tails 
+ggqqplot(hc$fb_gain_rpe, ylab = "fb gain rpe") # good
+ggqqplot(hc$BAS.Reward.Responsiveness..K.only., ylab = "BAS")
+
+cor.test(hc$fb_all_rpe, hc$BAS.Reward.Responsiveness..K.only., 
+                    method = "spearman") # p = 0.372
+
+cor.test(hc$fb_gain_rpe, hc$BAS.Reward.Responsiveness..K.only., 
+                    method = "spearman") # p = 0.6676
+
+cor.test(hc$fb_loss_rpe, hc$BAS.Reward.Responsiveness..K.only., 
+                    method = "spearman") # p = 0.1676
+
+```
+
+## shaps
+
+```{r}
+ggplot(mdd, aes(x=fb_all_rpe, y=shaps_score..new., color=group)) +
+  geom_point(size = 5) + 
+  geom_smooth(method=lm, aes(fill=group), se = FALSE) + 
+  scale_color_manual(values=c('lightblue3','burlywood2')) + 
+  labs(x='NAC RPE', y='shaps', title='') +
+  theme_light() +
+  theme(axis.text = element_text(size = 16)) + 
+  theme(legend.position=c(0.1,0.9), legend.justification=c(0.1,0.9)) 
+
+shapiro.test(mdd$fb_all_rpe) # p = 0.8932
+shapiro.test(mdd$fb_loss_rpe) # p = 0.3136
+shapiro.test(mdd$fb_gain_rpe) # p = 0.5061
+shapiro.test(mdd$shaps_score..new.) # p = .7385
+
+ggqqplot(mdd$fb_all_rpe, ylab = "fb all rpe")
+ggqqplot(mdd$fb_loss_rpe, ylab = "fb loss rpe") # good 
+ggqqplot(mdd$fb_gain_rpe, ylab = "fb gain rpe") # good
+ggqqplot(mdd$shaps_score..new., ylab = "shaps") # good
+
+cor.test(mdd$fb_all_rpe, mdd$shaps_score..new., 
+                    method = "pearson") # p = 0.5953
+
+cor.test(mdd$fb_gain_rpe, mdd$shaps_score..new., 
+                    method = "pearson") # p = 0.383
+
+cor.test(mdd$fb_loss_rpe, mdd$shaps_score..new., 
+                    method = "pearson") # p = 0.9531
+
+
+```
+

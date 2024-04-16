@@ -1,0 +1,556 @@
+---
+title: "RPLearning_modeling"
+author: "Jackie Beltrán"
+date: "2023-06-26"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+# source 
+http://www.sthda.com/english/wiki/unpaired-two-samples-t-test-in-r
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+require(ggplot2)
+require(tidyr)
+require(dplyr)
+require(ggpubr)
+require(data.table)
+
+require(tidyverse)
+require(rstatix)
+```
+
+```{r load data}
+
+getwd()
+
+data_m2 <- read.csv('/Users/jackiebeltran/Documents/GitHub/RP_Learning/3_results/model_2/N76_parameters.csv')
+
+# add group information
+lrs <-
+  data_m2 %>% select('subject_ID',
+                     'fit_reward_alpha',
+                     'fit_punishment_alpha',
+                     'fit_beta') %>% mutate(group = ifelse(substr(subject_ID, 1, 1) == "4", "MDD", "HC"))
+
+
+
+```
+
+
+# Are the average reward learning rates different between HC and MDD?
+
+HC: 0.334(0.352)
+MDD: 0.307(0.370)
+
+https://www.datanovia.com/en/lessons/wilcoxon-test-in-r/#computation-1
+
+```{r independent t test, reward alpha}
+# Summary statistics
+lrs %>%
+  group_by(group) %>%
+  get_summary_stats(fit_reward_alpha, type = "mean_sd")
+
+# test for normalcy: Data are not normally distributed, switch to wilcoxon test
+
+with(lrs, shapiro.test(fit_reward_alpha[group == "HC"]))# p = 0.004693
+with(lrs, shapiro.test(fit_reward_alpha[group == "MDD"])) # p = 0.000933
+
+# variances: F=0.948 p = 0.87 so no significant difference between the variances 
+res.ftest <- var.test(fit_reward_alpha ~ group, data = lrs)
+res.ftest
+
+res <- t.test(fit_reward_alpha ~ group, data = lrs) # t = 0.677 p= 0.50
+res
+
+# using an unpaired two-samples Wilcoxon test, we conclude there is no significant difference in learning rates between HC and MDD (W=807, p=0.38)
+
+# wilcox test
+stat.test <- lrs %>% 
+  wilcox_test(fit_reward_alpha ~ group) %>%
+  add_significance()
+stat.test
+
+# calculate effect size
+lrs %>% wilcox_effsize(fit_reward_alpha ~ group) # small effect size = 0.101
+
+```
+
+
+```{r t test, beta}
+# Summary statistics
+lrs %>%
+  group_by(group) %>%
+  get_summary_stats(fit_beta, type = "mean_sd")
+
+# test for normalcy: Data are not normally distributed, switch to wilcoxon test
+
+with(lrs, shapiro.test(fit_beta[group == "HC"]))# p = 6.23e-07
+with(lrs, shapiro.test(fit_beta[group == "MDD"])) # p = 1.18*e-6
+
+# variances: F=0.964 p = 0.91 so no significant difference between the variances bc p>0.05
+res.ftest <- var.test(fit_beta ~ group, data = lrs)
+res.ftest
+
+res <- t.test(fit_beta ~ group, data = lrs) # t = -0.068 p= 0.95
+res
+
+# using an unpaired two-samples Wilcoxon test, we conclude there is no significant difference in beta between HC and MDD (W=764, p=0.664)
+# wilcox.test(fit_beta ~ group, data = lrs)
+
+
+# wilcox test
+stat.beta.test <- lrs %>% 
+  wilcox_test(fit_beta ~ group) %>%
+  add_significance()
+stat.beta.test
+
+# calculate effect size
+lrs %>% wilcox_effsize(fit_beta ~ group) # small effect size = 0.051
+
+```
+
+
+# Correlation of model 1 learning rate with model 2 punishment
+```{r parameter recovery correlation}
+alphas <- param_recovery %>% select('alpha', 'fit_alpha')
+
+ggscatter(alphas, x = "alpha", y = "fit_alpha", 
+          add = "reg.line", conf.int = TRUE, 
+          cor.coef = TRUE, cor.method = "pearson",
+          xlab = "sim alpha", ylab = "fit alpha")
+
+# is the data normally distributed-- no, the p values are less than 0.05 -- switch to non-parametric test
+
+shapiro.test(alphas$alpha) # => p = 0.0061
+# Shapiro-Wilk normality test for wt
+shapiro.test(alphas$fit_alpha) # => p = 0.0203
+
+# test: S = 39106, p < 2.2e-16
+
+res <- cor.test(alphas$alpha, alphas$fit_alpha, 
+                    method = "spearman")
+
+res$p.value # 1.84 * 10^-20
+
+plot = ggplot(alphas,aes(alpha, fit_alpha)) +
+  geom_point(color = 'grey33', size = 5) +
+  geom_smooth(method='lm', se=FALSE, color='grey33') +
+  theme_few() +
+  labs(x='Simulated Alpha', y='Fit Alpha', title='') +
+  theme(plot.title = element_text(hjust=0.5, size=20, face='bold')) + 
+  theme(axis.text = element_text(size = 16))
+
+
+```
+
+
+```{r alpha comparison across model 1 & model 2}
+
+lr_models <- read.csv('../RP_Learning/models/lr_both_models.csv')
+
+ggscatter(lr_models, x = "fit_alpha", y = "fit_punishment_alpha", 
+          add = "reg.line", conf.int = TRUE, 
+          cor.coef = TRUE, cor.method = "pearson",
+          xlab = "Model 1 Learning Rate", ylab = "Model 2 Punishment Learning Rate")
+
+# is the data normally distributed-- no, the p values are less than 0.05 -- switch to non-parametric test
+
+shapiro.test(lr_models$fit_alpha) # => p = 0.00061
+# Shapiro-Wilk normality test for wt
+shapiro.test(lr_models$fit_punishment_alpha) # => p = 5.122e-05
+
+# test: S = 39106, p < 2.2e-16
+
+res <- cor.test(lr_models$fit_alpha, lr_models$fit_punishment_alpha, 
+                    method = "spearman")
+
+res$p.value # 0.017
+
+res
+
+
+### plot 
+
+library(ggplot2)
+library(ggthemes)
+
+plot = ggplot(lr_models,aes(fit_alpha, fit_punishment_alpha)) +
+  geom_point(color = 'grey33', size = 5) +
+  geom_smooth(method='lm', se=FALSE, color='grey33') +
+  theme_few() +
+  labs(x='Model 1 Learning Rate', y='Model 2 Punishment Learning Rate', title='') +
+  theme(plot.title = element_text(hjust=0.5, size=20, face='bold')) + 
+  theme(axis.text = element_text(size = 16))
+
+```
+
+# Model 1 Group differences 
+
+no significant differences between learning rates (effect size: 0.0795, p=0.56) 
+```{r}
+
+# Summary statistics
+data_m1 %>%
+  group_by(group) %>%
+  get_summary_stats(value, type = "mean_sd")
+
+# test for normalcy: doesn't meet criteria
+
+with(data_m1, shapiro.test(value[group == "HC"])) # p = 5.35 e -0.5
+with(data_m1, shapiro.test(value[group == "MDD"])) # p = 6.85 e-06
+
+# variances: F=1.579 p = 0.166 so no significant difference between the variances 
+res.ftest <- var.test(value ~ group, data = data_m1)
+res.ftest
+
+res <- t.test(value ~ group, data = data_m1) # t = 1.617 p= 0.110
+res
+
+# using an unpaired two-samples Wilcoxon test, we conclude there is no significant difference in learning rates between HC and MDD (W=913.5, p=0.0797)
+wilcox.test(value ~ group, data = data_m1)
+
+# wilcox test
+stat.test <- data_m1 %>% 
+  wilcox_test(value ~ group) %>%
+  add_significance()
+stat.test
+
+# calculate effect size: small -- 0.200
+data_m1 %>% wilcox_effsize(value ~ group)
+
+```
+
+```{r plotting group differences}
+
+# summary stats
+m1 <- data_summary(data_m1, varname="value", 
+                    groupnames=c("group"))
+
+p <- ggplot(m1, aes(x=group, y=value, fill=group)) + 
+   geom_bar(stat="identity", position=position_dodge()) +
+  geom_errorbar(aes(ymin=value-sd, ymax=value+sd), width=.2,
+                 position=position_dodge(.9))
+  
+p + scale_fill_brewer(palette="Paired") + theme_minimal()
+```
+
+```{r beta}
+
+# Summary statistics
+m1_beta %>%
+  group_by(group) %>%
+  get_summary_stats(fit_beta, type = "mean_sd")
+
+# test for normalcy: doesn't meet criteria
+
+with(m1_beta, shapiro.test(fit_beta[group == "HC"])) # p = 1.14e-07
+with(m1_beta, shapiro.test(fit_beta[group == "MDD"])) # p = 4.61e-08
+
+# variances: F=1.083 p = 0.808so no significant difference between the variances 
+res.ftest <- var.test(fit_beta ~ group, data = m1_beta)
+res.ftest
+
+res <- t.test(fit_beta ~ group, data = m1_beta) # t = 0.548 p= 0.585
+res
+
+# using an unpaired two-samples Wilcoxon test, we conclude there is no significant difference in learning rates between HC and MDD (W=807.5, p=0.495)
+wilcox.test(fit_beta ~ group, data = m1_beta)
+
+# wilcox test
+stat.test <- m1_beta %>% 
+  wilcox_test(fit_beta ~ group) %>%
+  add_significance()
+stat.test
+
+# calculate effect size
+m1_beta %>% wilcox_effsize(fit_beta ~ group) # small effect = 0.0784, p = 0.495
+
+```
+
+```{r plotting beta}
+# summary stats
+m1_beta_sum <- data_summary(m1_beta, varname="fit_beta", 
+                    groupnames=c("group"))
+
+p <- ggplot(m1_beta_sum, aes(x=group, y=fit_beta, fill=group)) + 
+   geom_bar(stat="identity", position=position_dodge()) +
+  geom_errorbar(aes(ymin=fit_beta-sd, ymax=fit_beta+sd), width=.2,
+                 position=position_dodge(.9))
+  
+p + scale_fill_brewer(palette="Paired") + theme_minimal()
+
+```
+
+
+# Model 2 Group differences
+
+no significant group differences in reward LR -- small effect size(0.0852), p = 0.533
+
+```{r reward LR}
+
+reward_alpha = data_m2 %>% filter(parameter == "fit_reward_alpha")
+p_alpha = data_m2 %>% filter(parameter == "fit_punishment_alpha")
+
+# Summary statistics
+reward_alpha %>%
+  group_by(group) %>%
+  get_summary_stats(value, type = "mean_sd")
+
+# test for normalcy: doesn't meet criteria
+
+with(reward_alpha, shapiro.test(value[group == "HC"]))# p = 0.0043
+with(reward_alpha, shapiro.test(value[group == "MDD"])) # p = 0.0047
+
+# variances: F=0.99 p = 0.98 so no significant difference between the variances 
+res.ftest <- var.test(value ~ group, data = reward_alpha)
+res.ftest
+
+res <- t.test(value ~ group, data = reward_alpha) # t = 1.01 p= 0.315
+res
+
+# using an unpaired two-samples Wilcoxon test, we conclude there is no significant difference in learning rates between HC and MDD (W=862, p=0.219)
+wilcox.test(value ~ group, data = reward_alpha)
+
+# wilcox test
+stat.test <- reward_alpha %>% 
+  wilcox_test(value ~ group) %>%
+  add_significance()
+stat.test
+
+# calculate effect size
+reward_alpha %>% wilcox_effsize(value ~ group) # effect size = 0.141, p = 0.219
+
+```
+
+no significant difference: small effect size (0.00911) p=0.953
+```{r punishment LR}
+
+# Summary statistics
+p_alpha %>%
+  group_by(group) %>%
+  get_summary_stats(value, type = "mean_sd")
+
+# test for normalcy: doesn't meet criteria
+
+with(p_alpha, shapiro.test(value[group == "HC"]))# p = 1.498e-07
+with(p_alpha, shapiro.test(value[group == "MDD"])) # p = 3.027e-08
+
+# variances: F=1.706 p = 0.106 so no significant difference between the variances 
+res.ftest <- var.test(value ~ group, data = p_alpha)
+res.ftest
+
+res <- t.test(value ~ group, data = p_alpha) # t = 0.995 p= 0.323
+res
+
+# using an unpaired two-samples Wilcoxon test, we conclude there is no significant difference in learning rates between HC and MDD (W=809.5, p=0.488)
+wilcox.test(value ~ group, data = p_alpha)
+
+# wilcox test
+stat.test <- p_alpha %>% 
+  wilcox_test(value ~ group) %>%
+  add_significance()
+stat.test
+
+# calculate effect size
+p_alpha %>% wilcox_effsize(value ~ group) # effect size = 0.0796 p=0.488
+```
+
+LR across reward and punishment show a moderate effect size of 0.343, p = 0.0028
+```{r HC reward vs punishment}
+
+m2_hc <- lrs %>% filter(group == "HC")
+
+
+m2_hc_m <-
+  m2_hc %>% select("subject_ID",
+                   "group",
+                   "fit_reward_alpha",
+                   "fit_punishment_alpha") %>% reshape2::melt(
+                          id.vars = c("subject_ID", "group"),
+                          variable.name = "parameter")
+# Summary statistics
+m2_hc_m %>%
+  group_by(parameter) %>%
+  get_summary_stats(value, type = "mean_sd")
+
+# test for normalcy: doesn't meet criteria
+
+with(m2_hc_m, shapiro.test(value[parameter == "fit_reward_alpha"])) # p = 0.0047
+with(m2_hc_m, shapiro.test(value[parameter == "fit_punishment_alpha"])) # p = 3.03e-07
+
+# variances: F=1.1007 p = 0.772 so no significant difference between the variances 
+res.ftest <- var.test(value ~ parameter, data = m2_hc_m)
+res.ftest
+
+res <- t.test(value ~ parameter, data = m2_hc_m) # t = 2.71 p= 0.008
+res
+
+# using an unpaired two-samples Wilcoxon test, we conclude there is no significant difference in learning rates between HC and MDD (W=1010, p=0.0028)
+wilcox.test(value ~ parameter, data = m2_hc_m)
+
+# wilcox test
+stat.test <- m2_hc_m %>% 
+  wilcox_test(value ~ parameter) %>%
+  add_significance()
+stat.test
+
+# calculate effect size
+m2_hc_m %>% wilcox_effsize(value ~ parameter) # moderate effect size = 0.343
+
+```
+
+
+moderate effect size (0.310) p = 0.0209
+```{r MDD RvP differences}
+
+m2_mdd <- lrs%>% filter(group == "MDD")
+
+m2_mdd_m <-
+  m2_mdd %>% select("subject_ID",
+                   "group",
+                   "fit_reward_alpha",
+                   "fit_punishment_alpha") %>% reshape2::melt(
+                          id.vars = c("subject_ID", "group"),
+                          variable.name = "parameter")
+
+
+# Summary statistics
+m2_mdd_m %>%
+  group_by(parameter) %>%
+  get_summary_stats(value, type = "mean_sd")
+
+# test for normalcy: doesn't meet criteria
+
+with(m2_mdd_m, shapiro.test(value[parameter == "fit_reward_alpha"])) # p = 0.00093
+with(m2_mdd_m, shapiro.test(value[parameter == "fit_punishment_alpha"])) # p = 5.2e-08
+
+# variances: F=1.95 p = 0.042, significant difference between the variances 
+res.ftest <- var.test(value ~ parameter, data = m2_mdd_m)
+res.ftest
+
+res <- t.test(value ~ parameter, data = m2_mdd_m) # t = 3.23 p= 0.0019
+res
+
+wilcox.test(value ~ parameter, data = m2_mdd_m)
+
+# wilcox test, W = 940, p =0.02
+stat.test <- m2_mdd_m %>% 
+  wilcox_test(value ~ parameter) %>%
+  add_significance()
+stat.test
+
+# calculate effect size
+m2_mdd_m %>% wilcox_effsize(value ~ parameter) # small effect size = 0.259
+```
+
+```{r plotting LR results}
+
+# summary stats
+hc_lrs <- m2_hc_m %>%
+  group_by(parameter) %>%
+  get_summary_stats(value, type = "mean_sd")
+
+mdd_lrs <- m2_mdd_m %>%
+  group_by(parameter) %>%
+  get_summary_stats(value, type = "mean_sd")
+
+# add group column 
+hc_lrs$group <- "HC"
+mdd_lrs$group <- "MDD"
+
+# rbind 
+
+group_lrs <- rbind(hc_lrs, mdd_lrs)
+
+# plot
+
+p <- ggplot(group_lrs, aes(x = parameter, y = mean, fill = group)) +
+  labs(x = "",
+       y = "mean learning rate",
+       title = "") +
+  geom_bar(stat = "identity", position = position_dodge()) +
+  geom_errorbar(aes(ymin = mean - sd, ymax = mean + sd),
+                width = .2,
+                position = position_dodge(.9)) +
+  scale_fill_manual(values=c('lightblue3','peachpuff')) +
+  theme_minimal() +
+  theme(
+    axis.text = element_text(size = 20),
+    axis.title = element_text(size = 24),
+    legend.title = element_blank(),
+    legend.text = element_text(size=20),
+    legend.position = c(0.90, 0.95),
+  )
+
+
+```
+
+```{r plotting punishment LR}
+
+# summary stats
+punishment <- data_summary(p_alpha, varname="value", 
+                    groupnames=c("group"))
+
+
+p <- ggplot(punishment, aes(x=group, y=value, fill=group)) + 
+   geom_bar(stat="identity", position=position_dodge()) +
+  geom_errorbar(aes(ymin=value-sd, ymax=value+sd), width=.2,
+                 position=position_dodge(.9))
+  
+p + scale_fill_brewer(palette="Paired") + theme_minimal()
+
+
+```
+
+```{r beta}
+
+# Summary statistics
+m2_beta %>%
+  group_by(group) %>%
+  get_summary_stats(fit_beta, type = "mean_sd")
+
+# test for normalcy: doesn't meet criteria
+
+with(m2_beta, shapiro.test(fit_beta[group == "HC"])) # p = 7.197e-07
+with(m2_beta, shapiro.test(fit_beta[group == "MDD"])) # p = 8.53e-07
+
+# variances: F=1.057 p = 0.864 so no significant difference between the variances 
+res.ftest <- var.test(fit_beta ~ group, data = m2_beta)
+res.ftest
+
+res <- t.test(fit_beta ~ group, data = m2_beta) # t = 0.394 p= 0.695
+res
+
+# using an unpaired two-samples Wilcoxon test, we conclude there is no significant difference in learning rates between HC and MDD (W=806, p=0.507
+wilcox.test(fit_beta ~ group, data = m2_beta)
+
+# wilcox test
+stat.test <- m2_beta %>% 
+  wilcox_test(fit_beta ~ group) %>%
+  add_significance()
+stat.test
+
+# calculate effect size
+m2_beta %>% wilcox_effsize(fit_beta ~ group) # small effect size = 0.076, p =0.507
+```
+
+```{r}
+
+# summary stats
+m2_beta_sum <- data_summary(m2_beta, varname="fit_beta", 
+                    groupnames=c("group"))
+
+p <- ggplot(m2_beta_sum, aes(x=group, y=fit_beta, fill=group)) + 
+   geom_bar(stat="identity", position=position_dodge()) +
+  geom_errorbar(aes(ymin=fit_beta-sd, ymax=fit_beta+sd), width=.2,
+                 position=position_dodge(.9))
+  
+p + scale_fill_brewer(palette="Paired") + theme_minimal()
+
+
+```
+

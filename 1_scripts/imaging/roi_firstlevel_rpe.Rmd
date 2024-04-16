@@ -1,0 +1,3285 @@
+---
+title: "roi_firstlevel_rpe"
+author: "Jackie Beltrán"
+date: "2023-02-02"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+# libraries
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+require(ggplot2)
+require(tidyr)
+require(dplyr)
+require(ggpubr)
+require(data.table)
+require(tidyr)
+require(patchwork)
+require(ppcor)
+```
+
+# Data
+```{r load data}
+getwd()
+
+roi <- read.csv('../../../../RL/data/roi_N74.csv') # roi extraction for each subj
+
+assess <- read.csv('../../../../RL/data/K01_tracking_covs.csv') 
+
+```
+
+# Functions 
+
+```{r function}
+
+# correlation with clinical assessments 
+ca_analysis <- function(df, roi, contrast, scale, group_col) {
+  
+  # subset the dataframe for the ROI and contrast of interest
+  
+  df_sub = df[df$ROI == roi,c(group_col, contrast, scale)]
+  
+  HC_normalcy_contrast_test <-
+    with(df_sub, shapiro.test(df_sub[[contrast]][group == "HC"]))
+  
+  MDD_normalcy_contrast_test <-
+    with(df_sub, shapiro.test(df_sub[[contrast]][group == "MDD"]))
+  
+  HC_normalcy_scale_test <- with(df_sub, shapiro.test(df_sub[[scale]][group == "HC"]))
+  MDD_normalcy_scale_test <- with(df_sub, shapiro.test(df_sub[[scale]][group == "MDD"]))
+
+  if (HC_normalcy_contrast_test$p.value < 0.05 |
+      HC_normalcy_scale_test$p.value < 0.05) {
+    print("Conducting non-parametric test...")
+    hc_spearman_result <-
+      cor.test(df_sub[[contrast]][df_sub[[group_col]] == "HC"],
+               df_sub[[scale]][df_sub[[group_col]] == "HC"], method = "spearman")
+    hc_pearson_result <- NULL
+    
+  } else {
+    print("Conducting pearson correlation test...")
+    hc_spearman_result <- NULL
+    hc_pearson_result <-
+      cor.test(df_sub[[contrast]][df_sub[[group_col]] == "HC"],
+               df_sub[[scale]][df_sub[[group_col]] == "HC"], 
+               method = "pearson")
+  }
+  
+  if (MDD_normalcy_contrast_test$p.value < 0.05 |
+    MDD_normalcy_scale_test$p.value < 0.05) {
+    print("Conducting non-parametric test...")
+    
+    mdd_spearman_result <-
+      cor.test(df_sub[[contrast]][df_sub[[group_col]] == "MDD"],
+               df_sub[[scale]][df_sub[[group_col]] == "MDD"], 
+               method = "spearman")
+    mdd_pearson_result <- NULL
+  } else {
+    print("Conducting pearson correlation test...")
+    mdd_spearman_result <- NULL
+    mdd_pearson_result <-
+      cor.test(df_sub[[contrast]][df_sub[[group_col]] == "MDD"],
+               df_sub[[scale]][df_sub[[group_col]] == "MDD"], 
+               method = "pearson")
+  }
+
+  results <- list(
+    HC_normalcy_contrast_test = HC_normalcy_contrast_test,
+    HC_normalcy_scale_test = HC_normalcy_scale_test,
+    MDD_normalcy_contrast_test = MDD_normalcy_contrast_test,
+    MDD_normalcy_scale_test = MDD_normalcy_scale_test,
+    hc_spearman_result = hc_spearman_result,
+    hc_pearson_result = hc_pearson_result,
+    mdd_spearman_result = mdd_spearman_result,
+    mdd_pearson_result = mdd_pearson_result
+  )
+
+  return(results)
+}
+
+```
+
+# preproc
+
+```{r preproc assess}
+
+ca_sub <- assess %>% dplyr::select('K01_SUBID', 'TEPS.Anticipatory', 'TEPS.Consummatory')
+
+# rename column to then merge datasets
+names(ca_sub)[names(ca_sub) == "K01_SUBID"] <- "subj_ID"
+
+df_full <- merge(roi, ca_sub)
+```
+
+## TEPS
+- we remove outliers and end up with a dataframe called teps_df
+```{r}
+teps <-
+  df_full %>% dplyr::select('subj_ID', 'group', 'TEPS.Anticipatory', 'TEPS.Consummatory') %>% 
+  distinct()
+
+# anticipatory; mean HC = 45.9(8.75), mean MDD = 35.7(10.2)
+# consum; mean HC = 38.8(7.93), mean MDD = 32.9(9.16)
+teps_m <-
+  reshape2::melt(teps,
+                 id = c('subj_ID', 'group'),
+                 variable.name = "TEPS")
+
+teps_sum <- teps_m %>% 
+  group_by(group, TEPS) %>%
+  summarise(mean_contrast = mean(value), sd_contrast= sd(value))
+
+```
+
+```{r boxplot}
+ggplot(teps_m, aes(x = TEPS, y = value, fill = group)) +
+  geom_boxplot(outlier.shape = NA) +
+    geom_dotplot(binaxis='y', stackdir='center',
+                 position=position_dodge(0.9), dotsize = 0.3) +
+  
+  scale_fill_manual(values=c('lightblue3','peachpuff')) +
+
+  #facet_wrap(~ROI, scales = "free_y") +
+  labs(title = "",
+       x = "",
+       y = "score") +
+  theme_minimal() + 
+    theme(
+    # axis.text = element_text(size = 15),
+    axis.title = element_text(size = 15),
+    strip.text = element_text(size = 12),
+    legend.title = element_blank(),
+    legend.text = element_text(size=15),
+  )
+```
+
+```{r outlier removal}
+
+teps_out_3 <- teps_m %>%
+  group_by(group, TEPS) %>%
+  mutate(
+    mean_value = mean(value),
+    sd_value = sd(value),
+    is_outlier = value > (mean_value + 3 * sd_value) |
+      value < (mean_value - 3 * sd_value)
+  )
+
+# Identify outliers 
+teps_outliers <- teps_out_3 %>% filter(is_outlier == T)
+
+# View the outliers
+print(teps_outliers) # HC, 543 on both scales: teps_ant = 15, teps_cons = 9
+
+# remove outliers
+teps_df <-
+  anti_join(teps_out_3,
+            teps_outliers,
+            by = c("subj_ID", "group", "TEPS")) %>%
+  dplyr::select("subj_ID", "group", "TEPS", "value")
+
+# quick check, subj 543 should be omitted in teps_df
+teps_df %>% filter(subj_ID == 543)
+
+## summary statistics for dataset without outliers
+teps_df_sum <- teps_df %>% 
+  group_by(group, TEPS) %>%
+  summarise(mean_value = mean(value), sd_value= sd(value))
+
+```
+
+## ROI
+- we remove outliers and end up with df called roi_o
+```{r subset data}
+# select for ROIs of interest
+roi_filtered <- roi %>%
+  filter(
+    ROI %in% c(
+      "vta_mni",
+      "vta_aveHCPT",
+      "amyg",
+      "LB_amyg",
+      "vmPFC",
+      "rl_accumbens",
+      "antrInsula"
+    )
+  )
+
+length(unique(roi_filtered$subj_ID)) # N = 74
+
+str(roi_filtered)
+roi_filtered$subj_ID <- as.factor(roi_filtered$subj_ID)
+roi_filtered$group <- as.factor(roi_filtered$group)
+roi_filtered$ROI <- as.factor(roi_filtered$ROI)
+
+# subset for MDD
+roi_mdd <- roi_filtered %>% filter(grepl("^4", subj_ID))
+length(unique(roi_mdd$subj_ID)) # N = 38
+
+# melt just to plot / generate a summary of means & stds
+roi_contrasts_m <-
+  reshape2::melt(roi_filtered,
+                 id = c('subj_ID', 'group', 'ROI'),
+                 variable.name = "contrast")
+
+roi_contrasts_sum <- roi_contrasts_m %>% 
+  group_by(group, contrast, ROI) %>%
+  summarise(mean_contrast = mean(value), sd_contrast= sd(value)) %>% arrange(contrast, ROI)
+
+# write.csv(roi_contrasts_sum, file = "roi_summary_stats.csv", row.names=F)
+
+```
+
+```{r box plot}
+
+ggplot(roi_contrasts_m, aes(x = contrast, y = value, fill = group)) +
+  geom_boxplot(outlier.shape = NA) +
+    geom_dotplot(binaxis='y', stackdir='center',
+                 position=position_dodge(0.9), dotsize = 0.3) +
+  
+  scale_fill_manual(values=c('lightblue3','peachpuff')) +
+
+  facet_wrap(~ROI, scales = "free_y") +
+  labs(title = "ROI signal intensity by contrast and group",
+       x = "Contrast",
+       y = "Signal") +
+  theme_minimal() + 
+    theme(
+    # axis.text = element_text(size = 15),
+    axis.title = element_text(size = 15),
+    strip.text = element_text(size = 12),
+    legend.title = element_blank(),
+    legend.text = element_text(size=15),
+  )
+
+```
+
+```{r plot mean + sd}
+ggplot(roi_contrasts_sum, aes(x = contrast, y = mean_contrast, fill = group)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  
+  geom_errorbar(
+    aes(ymin = mean_contrast - sd_contrast, ymax = mean_contrast + sd_contrast),
+    width = .1,
+    position = position_dodge(.9)
+  ) +
+  
+  scale_fill_manual(values=c('lightblue3','peachpuff')) +
+
+  facet_wrap(~ROI, scales = "free_y") +
+  labs(title = "Mean ROI signal intensity by contrast and group",
+       x = "Contrast",
+       y = "Signal") +
+  theme_minimal() + 
+    theme(
+    axis.text.x = element_text(angle=45, hjust=1),
+    axis.title = element_text(size = 15),
+    strip.text = element_text(size = 12),
+    legend.title = element_blank(),
+    legend.text = element_text(size=15),
+  )
+
+```
+
+
+```{r detect outliers}
+
+roi_out_3 <- roi_contrasts_m %>%
+  group_by(group, contrast, ROI) %>%
+  mutate(
+    mean_value = mean(value),
+    sd_value = sd(value),
+    is_outlier = value > (mean_value + 3 * sd_value) |
+      value < (mean_value - 3 * sd_value)
+  )
+
+# Identify outliers 
+outliers_3 <- roi_out_3 %>% filter(is_outlier == T)
+
+# View the outliers
+print(outliers_3)
+```
+
+```{r remove outliers & generate summary}
+roi_o <-
+  anti_join(roi_out_3,
+            outliers_3,
+            by = c("subj_ID", "group", "contrast", "ROI", "value")) %>%
+  dplyr::select("subj_ID", "group", "ROI", "contrast", "value")
+
+# quick check, subj 413 nac, stimgain should be omitted in roi_o
+roi_o %>% filter(subj_ID == 413 & ROI == "rl_accumbens")
+
+```
+
+```{r summary }
+
+## summary statistics for dataset without outliers
+roi_o_sum <- roi_o %>% 
+  group_by(group, contrast, ROI) %>%
+  summarise(mean_contrast = mean(value), sd_contrast= sd(value)) %>% arrange(contrast, ROI)
+
+```
+
+
+```{r reshape and merge}
+roi_o_w <- reshape2::dcast(roi_o, subj_ID + group + ROI ~ contrast)
+roi_o_w <- roi_o_w[order(roi_o_w$ROI, roi_o_w$subj_ID),]
+
+col_order <-
+  c(
+    "group",
+    "subj_ID",
+    "stimGain",
+    "stimLoss",
+    "stimNeutral",
+    "keyGo",
+    "fb_loss_rpe",
+    "fb_gain_rpe",
+    "fb_all_rpe",
+    "ROI"
+  )
+
+roi_o_w <- roi_o_w[, col_order]
+
+teps_o_w <- reshape2::dcast(teps_df, subj_ID + group ~ TEPS)
+
+```
+
+- generate a df free of outliers from the TEPS and ROI dataframe
+```{r merge}
+df <- merge(teps_o_w, roi_o_w)
+
+length(unique(df$subj_ID)) # N = 73, one subject missing
+
+str(df)
+
+```
+
+- generate df free of outliers that includes covariates, df_covs
+```{r add covariates}
+
+covs <- assess %>% dplyr::select('K01_SUBID', 'SUB_gender', 'SUB_Age', 'Medication')
+
+# rename column
+names(covs)[names(covs) == "K01_SUBID"] <- "subj_ID"
+
+# merge
+df_covs <- merge(df, covs)
+length(unique(df_covs$subj_ID)) # N = 73
+
+
+df_covs$subj_ID <- as.factor(df_covs$subj_ID)
+df_covs$group<- as.factor(df_covs$group)
+df_covs$SUB_gender <- as.factor(df_covs$SUB_gender)
+
+```
+
+```{r subset subjects without medication}
+
+df_covs_nomed <- df_covs %>% filter(Medication == "1")
+
+```
+
+# ASSESSMENT CORRELATIONS
+- use df
+## VTA
+- Consummatory anhedonia
+
+HC: R=-0.283, p = 0.161
+MDD: R = -0.13, p = 0.53
+
+```{r stats}
+
+# Consummatory anhedonia & vta 
+
+vta_ca <- df[df$ROI == "vta_mni", ]
+
+hc <- vta_ca[vta_ca$group == "HC", ] # N=35
+mdd <- vta_ca[vta_ca$group == "MDD", ] # N=38
+
+# the data are approx normally distributed
+
+shapiro.test(hc$fb_gain_rpe) # => p = 0.14
+shapiro.test(hc$fb_loss_rpe) # p = 0.78
+shapiro.test(hc$fb_all_rpe) # p = 0.04 # not normally distributed
+shapiro.test(hc$TEPS.Consummatory) # => p = 0.052
+
+shapiro.test(mdd$fb_gain_rpe) # p = 0.77
+shapiro.test(mdd$fb_loss_rpe) # p = 0.67
+shapiro.test(mdd$fb_all_rpe) # p = 0.274
+shapiro.test(mdd$TEPS.Consummatory) # p = 0.45
+
+ggqqplot(hc$fb_gain_rpe, ylab = "fb gain rpe") # line is completely flat
+ggqqplot(hc$fb_loss_rpe, ylab = "fb loss rpe") # line is completely flat
+ggqqplot(hc$fb_all_rpe, ylab = "fb all rpe") # some drift near the tails
+ggqqplot(hc$TEPS.Consummatory, ylab = "hc teps cons") # potential outliers
+
+ggqqplot(mdd$fb_gain_rpe, ylab = "fb gain rpe") # looks good
+ggqqplot(mdd$fb_loss_rpe, ylab = "fb loss rpe") # looks good
+ggqqplot(mdd$fb_all_rpe, ylab = "fb all rpe") # some drift near the tails but okay
+ggqqplot(mdd$TEPS.Consummatory, ylab = "mdd teps cons") # looks good
+
+# HC
+res <- cor.test(hc$fb_gain_rpe, hc$TEPS.Consummatory, 
+                    method = "pearson")
+res
+res$p.value # 0.58
+
+# MDD
+res <- cor.test(mdd$fb_gain_rpe, mdd$TEPS.Consummatory, 
+                    method = "pearson")
+res
+res$p.value # 0.6777
+
+```
+
+```{r loss rpe }
+# HC
+res <- cor.test(hc$fb_loss_rpe, hc$TEPS.Consummatory, 
+                    method = "pearson")
+res
+res$p.value # 0.09
+
+# MDD
+res <- cor.test(mdd$fb_loss_rpe, mdd$TEPS.Consummatory, 
+                    method = "pearson")
+res # p = 0.3521
+
+```
+
+
+```{r full rpe}
+
+# HC
+res <- cor.test(hc$fb_all_rpe, hc$TEPS.Consummatory, 
+                    method = "spearman")
+res
+res$p.value # 0.082
+
+# MDD
+res <- cor.test(mdd$fb_all_rpe, mdd$TEPS.Consummatory, 
+                    method = "pearson")
+res # p = 0.599
+
+```
+
+```{r plot}
+### plot
+
+# consummatory & gain RPE
+ggplot(vta_ca, aes(x=TEPS.Consummatory, y=fb_gain_rpe, color=group)) +
+  geom_point(size = 5) + 
+  geom_smooth(method=lm, aes(fill=group), se = FALSE) + 
+  scale_color_manual(values=c('lightblue3','burlywood2')) + 
+  labs(x='Consummatory Anhedonia', y='Gain condition RPE', title='') +
+  theme_light() +
+  theme(axis.text = element_text(size = 16)) + 
+  theme(legend.position=c(0.1,0.9), legend.justification=c(0.1,0.9)) 
+
+# consummatory & loss RPE 
+ggplot(vta_ca, aes(x=TEPS.Consummatory, y=fb_loss_rpe, color=group)) +
+  geom_point(size = 5) + 
+  geom_smooth(method=lm, aes(fill=group), se = FALSE) + 
+  scale_color_manual(values=c('lightblue3','burlywood2')) + 
+  labs(x='Consummatory Anhedonia', y='Loss condition RPE', title='') +
+  theme_light() +
+  theme(axis.text = element_text(size = 16)) + 
+  theme(legend.position=c(0.1,0.9), legend.justification=c(0.1,0.9)) 
+
+# consummatory & full RPE
+ggplot(vta_ca, aes(x=TEPS.Consummatory, y=fb_all_rpe, color=group)) +
+  geom_point(size = 5) + 
+  geom_smooth(method=lm, aes(fill=group), se = FALSE) + 
+  scale_color_manual(values=c('lightblue3','burlywood2')) + 
+  labs(x='Consummatory Anhedonia', y='RPE', title='') +
+  theme_light() +
+  theme(axis.text = element_text(size = 16)) + 
+  theme(legend.position=c(0.1,0.9), legend.justification=c(0.1,0.9)) 
+
+# anticipatory & gain rpe
+
+vta_gain <- ggplot(vta_ca, aes(x=TEPS.Anticipatory, y=fb_gain_rpe, color=group)) +
+  geom_point(size = 5) + 
+  geom_smooth(method=lm, aes(fill=group), se = FALSE, fullrange=TRUE) + 
+  scale_color_manual(values=c('lightblue3','burlywood2')) + 
+  labs(x='Anticipatory Anhedonia', y='Gain condition RPE', title='') +
+  theme_light() +
+  theme(axis.text = element_text(size = 16)) + 
+  theme(legend.position=c(0.1,0.9), legend.justification=c(0.1,0.9)) 
+
+# anticipatory & loss rpe
+vta_loss <- ggplot(vta_ca, aes(x=TEPS.Anticipatory, y=fb_loss_rpe, color=group)) +
+  geom_point(size = 5) + 
+  geom_smooth(method=lm, aes(fill=group), se = FALSE, fullrange=TRUE) + 
+  scale_color_manual(values=c('lightblue3','burlywood2')) + 
+  labs(x='Anticipatory Anhedonia', y='Loss condition RPE', title='') +
+  theme_light() +
+  theme(axis.text = element_text(size = 16)) + 
+  theme(legend.position=c(0.1,0.9), legend.justification=c(0.1,0.9)) 
+
+# anticipatory & full rpe
+vta_full <- ggplot(vta_ca, aes(x=TEPS.Anticipatory, y=fb_all_rpe, color=group)) +
+  geom_point(size = 5) + 
+  geom_smooth(method=lm, aes(fill=group), se = FALSE, fullrange=TRUE) + 
+  scale_color_manual(values=c('lightblue3','burlywood2')) + 
+  labs(x='Anticipatory Anhedonia', y='RPE', title='') +
+  theme_light() +
+  theme(axis.text = element_text(size = 16)) + 
+  theme(legend.position=c(0.1,0.9), legend.justification=c(0.1,0.9)) 
+
+
+```
+
+```{r}
+vta_full + vta_loss + vta_gain
+```
+
+Anticipatory anhedonia 
+
+```{r stats, gain rpe}
+
+# are the data are normally distributed
+
+shapiro.test(hc$fb_gain_rpe) # => p = 0.14
+shapiro.test(hc$TEPS.Anticipatory) # => p = 0.25
+
+shapiro.test(mdd$fb_gain_rpe) # p = 0.77
+shapiro.test(mdd$TEPS.Anticipatory) # p = 0.5988
+
+# HC
+res <- cor.test(hc$fb_gain_rpe, hc$TEPS.Anticipatory, 
+                    method = "pearson")
+res
+res$p.value # 0.47
+
+# MDD
+res <- cor.test(mdd$fb_gain_rpe, mdd$TEPS.Anticipatory, 
+                    method = "pearson")
+res
+res$p.value # 0.58
+
+```
+
+```{r stats, loss rpe}
+
+# the data are normally distributed -- yes, the p values are greater than 0.05 
+
+shapiro.test(hc$fb_loss_rpe) # p = 0.78
+shapiro.test(hc$TEPS.Anticipatory) # p = 0.2493
+shapiro.test(mdd$fb_loss_rpe) # p = 0.671
+shapiro.test(mdd$TEPS.Anticipatory) # p = 0.599
+
+# HC
+res <- cor.test(hc$fb_loss_rpe, hc$TEPS.Anticipatory, 
+                    method = "pearson")
+res
+res$p.value # 0.6206424
+
+# MDD
+res <- cor.test(mdd$fb_loss_rpe, mdd$TEPS.Anticipatory, 
+                    method = "pearson")
+res
+res$p.value # 0.486
+
+```
+
+```{r full rpe}
+shapiro.test(hc$fb_all_rpe) # p = 0.049
+shapiro.test(hc$TEPS.Anticipatory) # p = 0.2493
+shapiro.test(mdd$fb_all_rpe) # p = 0.27
+shapiro.test(mdd$TEPS.Anticipatory) # p = 0.599
+
+# HC
+res <- cor.test(hc$fb_all_rpe, hc$TEPS.Anticipatory, 
+                    method = "spearman")
+res
+res$p.value # 0.5627
+
+# MDD
+res <- cor.test(mdd$fb_all_rpe, mdd$TEPS.Anticipatory, 
+                    method = "pearson")
+res
+res$p.value # 0.8339
+```
+
+
+## VTA_ave 
+
+```{r consummatory}
+
+# fb gain
+# HC: t = -0.28091, df = 33, p-value = 0.7805 ; MDD: t = 0.51153, df = 36, p-value = 0.6121
+ca_analysis(df = df, roi = "vta_aveHCPT", contrast = "fb_gain_rpe", 
+            scale = "TEPS.Consummatory", group_col = "group")
+
+# fb loss
+# HC: t = -1.8919, df = 33, p-value = 0.06731 ; MDD: t = -0.19574, df = 35, p-value = 0.8459
+ca_analysis(df = df, roi = "vta_aveHCPT", contrast = "fb_loss_rpe", 
+            scale = "TEPS.Consummatory", group_col = "group")
+
+# full rpe
+# HC: t = -1.7828, df = 33, p-value = 0.08382 ; MDD: t = -0.27994, df = 36, p-value = 0.7811
+ca_analysis(df = df, roi = "vta_aveHCPT", contrast = "fb_all_rpe", 
+            scale = "TEPS.Consummatory", group_col = "group")
+
+
+```
+
+```{r anticipatory}
+# fb gain
+# HC: t = 0.3876, df = 33, p-value = 0.7008
+# MDD: t = 0.14141, df = 36, p-value = 0.8883
+ca_analysis(df = df, roi = "vta_aveHCPT", contrast = "fb_gain_rpe", 
+            scale = "TEPS.Anticipatory", group_col = "group")
+
+# fb loss
+# HC: t = -1.2123, df = 33, p-value = 0.234
+# MDD: t = -0.091195, df = 35, p-value = 0.9279
+ca_analysis(df = df, roi = "vta_aveHCPT", contrast = "fb_loss_rpe", 
+            scale = "TEPS.Anticipatory", group_col = "group")
+
+# full rpe
+# HC: t = -0.71771, df = 33, p-value = 0.478
+# MDD: t = -0.64652, df = 36, p-value = 0.522
+ca_analysis(df = df, roi = "vta_aveHCPT", contrast = "fb_all_rpe", 
+            scale = "TEPS.Anticipatory", group_col = "group")
+
+```
+
+## NAC 
+
+```{r}
+# fb gain
+# HC: t = 1.7197, df = 33, p-value = 0.09486
+# MDD: t = -0.83718, df = 36, p-value = 0.408
+ca_analysis(df = df, roi = "rl_accumbens", contrast = "fb_gain_rpe", 
+            scale = "TEPS.Consummatory", group_col = "group")
+
+# fb loss - ties issue
+# error
+ca_analysis(df = df, roi = "rl_accumbens", contrast = "fb_loss_rpe", 
+            scale = "TEPS.Consummatory", group_col = "group")
+
+nac_ca <- df[df$ROI == "rl_accumbens", ]
+
+hc <- nac_ca[nac_ca$group == "HC", ] # N=35
+mdd <- nac_ca[nac_ca$group == "MDD", ] # N=38
+
+shapiro.test(hc$fb_loss_rpe) # p = 0.02
+shapiro.test(hc$TEPS.Consummatory) # p = 0.05
+cor.test(hc$TEPS.Consummatory, hc$fb_loss_rpe, method = "spearman") # S = 6208.8, p = 0.4552 
+
+shapiro.test(mdd$fb_loss_rpe) # p = 0.3136
+shapiro.test(mdd$TEPS.Consummatory) # p = 0.45
+cor.test(mdd$TEPS.Consummatory, mdd$fb_loss_rpe, method = "pearson") # p = 0.2872
+
+# full rpe - ties issue
+ca_analysis(df = df, roi = "rl_accumbens", contrast = "fb_all_rpe", 
+            scale = "TEPS.Consummatory", group_col = "group")
+
+shapiro.test(hc$fb_all_rpe) # 0.006344
+cor.test(hc$TEPS.Consummatory, hc$fb_all_rpe, method = "spearman") # p = 0.1508
+
+shapiro.test(mdd$fb_all_rpe) # 0.8932
+cor.test(mdd$TEPS.Consummatory, mdd$fb_all_rpe, method = "pearson") # p = 0.7229
+
+```
+
+## vmPFC - sig anticipatory results
+
+```{r consummatory}
+
+# fb gain
+# HC: p = 0.2138, MDD: p = 0.2116
+ca_analysis(df = df, roi = "vmPFC", contrast = "fb_gain_rpe", 
+            scale = "TEPS.Consummatory", group_col = "group")
+
+# fb loss
+# HC: p = 0.6082 ; MDD, p = 0.9337
+ca_analysis(df = df, roi = "vmPFC", contrast = "fb_loss_rpe", 
+            scale = "TEPS.Consummatory", group_col = "group")
+
+# full rpe
+# HC: t = -1.7828, df = 33, p-value = 0.08382 ; MDD: t = -0.27994, df = 36, p-value = 0.7811
+ca_analysis(df = df, roi = "vmPFC", contrast = "fb_all_rpe", 
+            scale = "TEPS.Consummatory", group_col = "group")
+
+
+```
+
+```{r anticipatory}
+# fb gain
+# HC: p = 0.9207, MDD: p = 0.04017
+ca_analysis(df = df, roi = "vmPFC", contrast = "fb_gain_rpe", 
+            scale = "TEPS.Anticipatory", group_col = "group")
+
+# fb loss
+# HC: p = 0.4381 ; MDD, p = 0.6359
+ca_analysis(df = df, roi = "vmPFC", contrast = "fb_loss_rpe", 
+            scale = "TEPS.Anticipatory", group_col = "group")
+
+# full rpe - warning with ties
+# HC: 
+ca_analysis(df = df, roi = "vmPFC", contrast = "fb_all_rpe", 
+            scale = "TEPS.Anticipatory", group_col = "group")
+
+# subset data 
+vmpfc_ca <- df[df$ROI == "vmPFC", ]
+hc <- vmpfc_ca[vmpfc_ca$group == "HC", ] # N=35
+mdd <- vmpfc_ca[vmpfc_ca$group == "MDD", ] # N=38
+
+shapiro.test(hc$fb_all_rpe) # 0.00368
+cor.test(hc$TEPS.Anticipatory, hc$fb_all_rpe, method = "spearman") # p = 0.3681 -- with ties
+
+shapiro.test(mdd$fb_all_rpe) # 0.2367
+shapiro.test(mdd$TEPS.Anticipatory) # 0.5988
+cor.test(mdd$TEPS.Anticipatory, mdd$fb_all_rpe, method = "pearson") # p = 0.1747
+
+
+```
+
+```{r plot}
+ggplot(vmpfc_ca, aes(x=TEPS.Anticipatory, y=fb_gain_rpe, color=group)) +
+  geom_point(size = 5) + 
+  geom_smooth(method=lm, aes(fill=group), se = FALSE, fullrange=TRUE) + 
+  scale_color_manual(values=c('lightblue3','burlywood2')) + 
+  labs(x='Anticipatory Anhedonia', y='vmPFC Gain condition RPE', title='') +
+  theme_light() +
+  theme(axis.text = element_text(size = 16)) + 
+  theme(legend.position=c(0.1,0.9), legend.justification=c(0.1,0.9)) 
+
+# anticipatory & loss rpe
+ggplot(vmpfc_ca, aes(x=TEPS.Anticipatory, y=fb_loss_rpe, color=group)) +
+  geom_point(size = 5) + 
+  geom_smooth(method=lm, aes(fill=group), se = FALSE, fullrange=TRUE) + 
+  scale_color_manual(values=c('lightblue3','burlywood2')) + 
+  labs(x='Anticipatory Anhedonia', y='vmPFC Loss condition RPE', title='') +
+  theme_light() +
+  theme(axis.text = element_text(size = 16)) + 
+  theme(legend.position=c(0.1,0.9), legend.justification=c(0.1,0.9)) 
+
+# anticipatory & full rpe
+ggplot(vmpfc_ca, aes(x=TEPS.Anticipatory, y=fb_all_rpe, color=group)) +
+  geom_point(size = 5) + 
+  geom_smooth(method=lm, aes(fill=group), se = FALSE, fullrange = T) + 
+  scale_color_manual(values=c('lightblue3','burlywood2')) + 
+  labs(x='Anticipatory Anhedonia', y='vmPFC RPE', title='') +
+  theme_light() +
+  theme(axis.text = element_text(size = 16)) + 
+  theme(legend.position=c(0.1,0.9), legend.justification=c(0.1,0.9)) 
+
+```
+
+
+## Amygdala
+Consummatory
+```{r gain RPE}
+
+amyg_ca <- df[df$ROI == "amyg", ]
+
+hc <- amyg_ca[amyg_ca$group == "HC", ]
+mdd <- amyg_ca[amyg_ca$group == "MDD", ]
+
+# HC
+res <- cor.test(hc$fb_gain_rpe, hc$teps_cons, 
+                    method = "pearson")
+res
+res$p.value # p=0.73
+
+# MDD
+res <- cor.test(mdd$fb_gain_rpe, mdd$teps_cons, 
+                    method = "pearson")
+res # p = 0.39
+
+```
+
+```{r loss RPE}
+# HC
+res <- cor.test(hc$fb_loss_rpe, hc$teps_cons, 
+                    method = "pearson")
+res # p-value = 0.2416
+
+# MDD
+res <- cor.test(mdd$fb_loss_rpe, mdd$teps_cons, 
+                    method = "pearson")
+res # p-value = 0.9205
+
+```
+
+Anticipatory 
+
+```{r gain RPE}
+
+# HC
+res <- cor.test(hc$fb_gain_rpe, hc$teps_ant, 
+                    method = "pearson")
+res # p-value = 0.8626
+
+# MDD
+res <- cor.test(mdd$fb_gain_rpe, mdd$teps_ant, 
+                    method = "pearson")
+res # p-value = 0.4012
+
+```
+
+```{r loss rpe}
+
+# HC
+res <- cor.test(hc$fb_loss_rpe, hc$teps_ant, 
+                    method = "pearson")
+res # p-value = 0.6725
+
+# MDD
+res <- cor.test(mdd$fb_loss_rpe, mdd$teps_ant, 
+                    method = "pearson")
+res # p-value = 0.8678
+
+```
+
+## Habenula 
+
+```{r consummatory gain rpe}
+hab_ca <- df[df$ROI == "hb_mni", ]
+
+hc <- hab_ca[hab_ca$group == "HC", ] # N=35
+mdd <- hab_ca[hab_ca$group == "MDD", ] # N=37
+
+# HC
+res <- cor.test(hc$fb_gain_rpe, hc$teps_cons, 
+                    method = "pearson")
+res # p = 0.07
+
+# MDD
+res <- cor.test(mdd$fb_gain_rpe, mdd$teps_cons, 
+                    method = "pearson")
+res # p = 0.9165
+
+```
+
+```{r loss rpe}
+# HC
+res <- cor.test(hc$fb_loss_rpe, hc$teps_cons, 
+                    method = "pearson")
+res # p = 0.0607
+
+# MDD
+res <- cor.test(mdd$fb_loss_rpe, mdd$teps_cons, 
+                    method = "pearson")
+res # p = 0.373
+
+```
+
+- Anticipatory
+```{r anticipatory gain rpe - HC sig}
+# HC
+res <- cor.test(hc$fb_gain_rpe, hc$teps_ant, 
+                    method = "pearson")
+res # p = 0.0076, R= -0.44
+
+# MDD
+res <- cor.test(mdd$fb_gain_rpe, mdd$teps_ant, 
+                    method = "pearson")
+res # p = 0.6889, R = -0.068
+
+```
+
+```{r loss rpe}
+# HC
+res <- cor.test(hc$fb_loss_rpe, hc$teps_ant, 
+                    method = "pearson")
+res # p = 0.33
+
+# MDD
+res <- cor.test(mdd$fb_loss_rpe, mdd$teps_ant, 
+                    method = "pearson")
+res # p = 0.44
+
+```
+
+```{r plots}
+# consummatory & gain RPE
+ggplot(hab_ca, aes(x=teps_cons, y=fb_gain_rpe, color=group)) +
+  geom_point(size = 5) + 
+  geom_smooth(method=lm, aes(fill=group), se = FALSE) + 
+  scale_color_manual(values=c('lightblue3','burlywood2')) + 
+  labs(x='Consummatory Anhedonia', y='Habenula Gain condition RPE', title='') +
+  theme_light() +
+  theme(axis.text = element_text(size = 16)) + 
+  theme(legend.position=c(0.1,0.9), legend.justification=c(0.1,0.9)) 
+
+# consummatory & loss RPE 
+ggplot(hab_ca, aes(x=teps_cons, y=fb_loss_rpe, color=group)) +
+  geom_point(size = 5) + 
+  geom_smooth(method=lm, aes(fill=group), se = FALSE) + 
+  scale_color_manual(values=c('lightblue3','burlywood2')) + 
+  labs(x='Consummatory Anhedonia', y='Habenula Loss condition RPE', title='') +
+  theme_light() +
+  theme(axis.text = element_text(size = 16)) + 
+  theme(legend.position=c(0.1,0.9), legend.justification=c(0.1,0.9)) 
+
+# anticipatory & gain rpe
+
+ggplot(hab_ca, aes(x=teps_ant, y=fb_gain_rpe, color=group)) +
+  geom_point(size = 5) + 
+  geom_smooth(method=lm, aes(fill=group), se = FALSE) + 
+  scale_color_manual(values=c('lightblue3','burlywood2')) + 
+  labs(x='Anticipatory Anhedonia', y='Habenula Gain condition RPE', title='') +
+  theme_light() +
+  theme(axis.text = element_text(size = 16)) + 
+  theme(legend.position=c(0.1,0.9), legend.justification=c(0.1,0.9)) 
+
+# anticipatory & loss rpe
+ggplot(hab_ca, aes(x=teps_ant, y=fb_loss_rpe, color=group)) +
+  geom_point(size = 5) + 
+  geom_smooth(method=lm, aes(fill=group), se = FALSE) + 
+  scale_color_manual(values=c('lightblue3','burlywood2')) + 
+  labs(x='Consummatory Anhedonia', y='Habenula Loss condition RPE', title='') +
+  theme_light() +
+  theme(axis.text = element_text(size = 16)) + 
+  theme(legend.position=c(0.1,0.9), legend.justification=c(0.1,0.9)) 
+
+```
+
+```{r}
+ggplot(hc, aes(x=teps_ant, y=fb_gain_rpe)) +
+  geom_point(size = 5) + 
+  geom_smooth(method=lm, aes(fill=group), se = FALSE) + 
+  scale_color_manual(values=c('lightblue3','burlywood2')) + 
+  labs(x='Anticipatory Anhedonia', y='Habenula Gain condition RPE', title='') +
+  theme_light() +
+  theme(axis.text = element_text(size = 16)) + 
+  theme(legend.position=c(0.1,0.9), legend.justification=c(0.1,0.9)) 
+
+```
+
+```{r}
+ggplot(mdd, aes(x=teps_ant, y=fb_gain_rpe)) +
+  geom_point(size = 5) + 
+  geom_smooth(method=lm, aes(fill=group), se = FALSE) + 
+  scale_color_manual(values=c('lightblue3','burlywood2')) + 
+  labs(x='Anticipatory Anhedonia', y='Habenula Gain condition RPE', title='') +
+  theme_light() +
+  theme(axis.text = element_text(size = 16)) + 
+  theme(legend.position=c(0.1,0.9), legend.justification=c(0.1,0.9)) 
+
+```
+
+# Anterior Insula
+
+## Consummatory 
+### gain rpe
+```{r}
+ins_ca <- df[df$ROI == "antrInsula", ]
+
+hc <- ins_ca[ins_ca$group == "HC", ] # N=35
+mdd <- ins_ca[ins_ca$group == "MDD", ] # N=37
+
+# HC
+res <- cor.test(hc$fb_gain_rpe, hc$teps_cons, 
+                    method = "pearson")
+res # p = 0.4451
+
+# MDD
+res <- cor.test(mdd$fb_gain_rpe, mdd$teps_cons, 
+                    method = "pearson")
+res # p = 0.3166
+
+```
+
+### loss rpe - MDD p = 0.15
+
+```{r}
+# HC
+res <- cor.test(hc$fb_loss_rpe, hc$teps_cons, 
+                    method = "pearson")
+res # p = 0.8723
+
+# MDD
+res <- cor.test(mdd$fb_loss_rpe, mdd$teps_cons, 
+                    method = "pearson")
+res # p = 0.1469
+
+```
+
+## Anticipatory 
+### gain rpe 
+```{r}
+# HC
+res <- cor.test(hc$fb_gain_rpe, hc$teps_ant, 
+                    method = "pearson")
+res # p = 0.813
+
+# MDD
+res <- cor.test(mdd$fb_gain_rpe, mdd$teps_ant, 
+                    method = "pearson")
+res # p = 0.3759
+
+```
+
+### loss rpe
+
+```{r}
+# HC
+res <- cor.test(hc$fb_loss_rpe, hc$teps_ant, 
+                    method = "pearson")
+res # p = 0.9422
+
+# MDD
+res <- cor.test(mdd$fb_loss_rpe, mdd$teps_ant, 
+                    method = "pearson")
+res # p = 0.8279
+
+```
+
+# sgACC
+
+## Consummatory 
+### gain rpe
+```{r}
+sgacc_ca <- df[df$ROI == "sgACC", ]
+
+hc <- sgacc_ca[ins_ca$group == "HC", ] # N=35
+mdd <- sgacc_ca[ins_ca$group == "MDD", ] # N=37
+
+# HC
+res <- cor.test(hc$fb_gain_rpe, hc$teps_cons, 
+                    method = "pearson")
+res # p = 0.2847
+
+# MDD
+res <- cor.test(mdd$fb_gain_rpe, mdd$teps_cons, 
+                    method = "pearson")
+res # p = 0.2709
+
+```
+
+### loss rpe - MDD p = 0.15
+
+```{r}
+# HC
+res <- cor.test(hc$fb_loss_rpe, hc$teps_cons, 
+                    method = "pearson")
+res # p = 0.4089
+
+# MDD
+res <- cor.test(mdd$fb_loss_rpe, mdd$teps_cons, 
+                    method = "pearson")
+res # p = 0.7853
+
+```
+
+## Anticipatory 
+### gain rpe 
+```{r}
+# HC
+res <- cor.test(hc$fb_gain_rpe, hc$teps_ant, 
+                    method = "pearson")
+res # p = 0.5677
+
+# MDD
+res <- cor.test(mdd$fb_gain_rpe, mdd$teps_ant, 
+                    method = "pearson")
+res # p = 0.527
+
+```
+
+### loss rpe
+
+```{r}
+# HC
+res <- cor.test(hc$fb_loss_rpe, hc$teps_ant, 
+                    method = "pearson")
+res # p = 0.4495
+
+# MDD
+res <- cor.test(mdd$fb_loss_rpe, mdd$teps_ant, 
+                    method = "pearson")
+res # p = 0.7749
+
+```
+
+
+# NAC Consummatory
+HC: R = 0.13 p = 0.53
+MDD: R= 0.118 p = 0.565
+```{r nac stats}
+
+nac <- df[df$roi == "rl_accumbens", ]
+
+hc <- nac[nac$group == "HC", ]
+mdd <- nac[nac$group == "MDD", ]
+
+# the data are normally distributed -- yes, the p values are greater than 0.05 
+
+shapiro.test(hc$feedback) # => p = 0.096
+shapiro.test(hc$TEPS.Consummatory) # => p = 0.06
+shapiro.test(mdd$feedback) # p =0.34
+shapiro.test(mdd$TEPS.Consummatory) # p = 0.85
+
+# HC
+res <- cor.test(hc$feedback, hc$TEPS.Consummatory, 
+                    method = "pearson")
+res
+res$p.value # 0.53
+
+# MDD
+res <- cor.test(mdd$feedback, mdd$TEPS.Consummatory, 
+                    method = "pearson")
+res #0.118
+res$p.value # 0.565
+
+### plot
+
+ggplot(nac, aes(x=TEPS.Consummatory, y=feedback, color=group)) +
+  geom_point(size = 5) + 
+  geom_smooth(method=lm, aes(fill=group), se = FALSE) + 
+  scale_color_manual(values=c('lightblue3','burlywood2')) + 
+  labs(x='Consummatory Anhedonia', y='NAC Response to Feedback', title='') +
+  theme_light() +
+  theme(axis.text = element_text(size = 16)) + 
+  theme(legend.position=c(0.1,0.9), legend.justification=c(0.1,0.9)) 
+
+```
+
+## NAC Anticipatory 
+hc: R=0.037 p=0.858
+mdd: R=0.070 p= 0.733
+
+```{r}
+
+# the data are normally distributed -- yes, the p values are greater than 0.05 
+
+shapiro.test(hc$feedback) # => p = 0.096
+shapiro.test(hc$TEPS.Anticipatory) # => p = 0.38
+shapiro.test(mdd$feedback) # p =0.34
+shapiro.test(mdd$TEPS.Anticipatory) # p = 0.997
+
+# HC
+res <- cor.test(hc$feedback, hc$TEPS.Anticipatory, 
+                    method = "pearson")
+res
+res$p.value
+
+# MDD
+res <- cor.test(mdd$feedback, mdd$TEPS.Anticipatory, 
+                    method = "pearson")
+res 
+res$p.value 
+
+### plot
+
+ggplot(nac, aes(x=TEPS.Anticipatory, y=feedback, color=group)) +
+  geom_point(size = 5) + 
+  geom_smooth(method=lm, aes(fill=group), se = FALSE) + 
+  scale_color_manual(values=c('lightblue3','burlywood2')) + 
+  labs(x='Anticipatory Anhedonia', y='NAC Response to Feedback', title='') +
+  theme_light() +
+  theme(axis.text = element_text(size = 16)) + 
+  theme(legend.position=c(0.1,0.9), legend.justification=c(0.1,0.9)) 
+
+```
+
+# vmPFC Consummatory 
+HC: R = -0.051, p=0.805
+MDD: R=0.054, p=0.793
+```{r stats}
+vmpfc <- df[df$roi == "vmPFC", ]
+
+hc <- vmpfc[vmpfc$group == "HC", ]
+mdd <- vmpfc[vmpfc$group == "MDD", ]
+
+# the data are normally distributed -- yes, the p values are greater than 0.05 
+
+shapiro.test(hc$feedback) # => p = 0.064
+shapiro.test(hc$TEPS.Consummatory) # => p = 0.06
+shapiro.test(mdd$feedback) # p =0.17
+shapiro.test(mdd$TEPS.Consummatory) # p = 0.85
+
+# HC
+res <- cor.test(hc$feedback, hc$TEPS.Consummatory, 
+                    method = "pearson")
+res
+res$p.value # 0.805
+
+# MDD
+res <- cor.test(mdd$feedback, mdd$TEPS.Consummatory, 
+                    method = "pearson")
+res #0.054
+res$p.value # 0.793
+
+### plot
+
+ggplot(vmpfc, aes(x=TEPS.Consummatory, y=feedback, color=group)) +
+  geom_point(size = 5) + 
+  geom_smooth(method=lm, aes(fill=group), se = FALSE) + 
+  scale_color_manual(values=c('lightblue3','burlywood2')) + 
+  labs(x='Consummatory Anhedonia', y='vmPFC Response to Feedback', title='') +
+  theme_light() +
+  theme(axis.text = element_text(size = 16)) + 
+  theme(legend.position=c(0.1,0.9), legend.justification=c(0.1,0.9)) 
+
+```
+
+## vmPFC Anticipatory 
+
+HC: R=0.00988, p = 0.962
+MDD: R= -0.15 p =0.46
+```{r}
+
+# the data are normally distributed -- yes, the p values are greater than 0.05 
+
+shapiro.test(hc$feedback) # => p = 0.064
+shapiro.test(hc$TEPS.Anticipatory) # => p = 0.38
+shapiro.test(mdd$feedback) # p =0.17
+shapiro.test(mdd$TEPS.Anticipatory) # p = 0.997
+
+# HC
+res <- cor.test(hc$feedback, hc$TEPS.Anticipatory, 
+                    method = "pearson")
+res
+res$p.value # 0.805
+
+# MDD
+res <- cor.test(mdd$feedback, mdd$TEPS.Anticipatory, 
+                    method = "pearson")
+res # -0.151
+res$p.value # 0.461
+
+### plot
+
+ggplot(vmpfc, aes(x=TEPS.Anticipatory, y=feedback, color=group)) +
+  geom_point(size = 5) + 
+  geom_smooth(method=lm, aes(fill=group), se = FALSE) + 
+  scale_color_manual(values=c('lightblue3','burlywood2')) + 
+  labs(x='Anticipatory Anhedonia', y='vmPFC Response to Feedback', title='') +
+  theme_light() +
+  theme(axis.text = element_text(size = 16)) + 
+  theme(legend.position=c(0.1,0.9), legend.justification=c(0.1,0.9)) 
+
+```
+
+#BLA 
+
+HC: r=0.195, p=0.339
+MDD: r= -0.055, p = 0.789
+
+```{r stats}
+bla_masq <- df[df$roi == "lb_amyg", ]
+
+hc <- bla_masq[bla_masq$group == "HC", ]
+mdd <- bla_masq[bla_masq$group == "MDD", ]
+
+# the data are normally distributed -- no, p values are less than 0.05 (do spearman)
+
+shapiro.test(hc$feedback) # => p = 1.302 * 10-5
+shapiro.test(hc$masq_gd_score) # => p = 0.0034
+shapiro.test(mdd$feedback) # p =0.001
+shapiro.test(mdd$masq_gd_score) # p = 0.55
+
+# HC
+res <- cor.test(hc$feedback, hc$masq_gd_score, 
+                    method = "spearman")
+res # r = 0.195
+res$p.value # 0.339
+
+# MDD
+res <- cor.test(mdd$feedback, mdd$masq_gd_score, 
+                    method = "spearman")
+res
+res$p.value # 0.789
+
+### plot
+ggplot(bla_masq, aes(x=masq_gd_score, y=feedback, color=group)) +
+  geom_point(size = 5) + 
+  geom_smooth(method=lm, aes(fill=group), se = FALSE) + 
+  scale_color_manual(values=c('lightblue3','burlywood2')) + 
+  labs(x='General Distress', y='BLA Response to feedback', title='') +
+  theme_light() +
+  theme(axis.text = element_text(size = 16)) + 
+  theme(legend.position=c(0.9,0.9), legend.justification=c(0.9,0.9)) 
+
+```
+
+# VTA MNI Consummatory
+HC: R=-0.37 p=0.066
+MDD: R= -0.125, p=0.54
+
+```{r stats}
+
+vta_consum <- df[df$roi == "vta_mni", ]
+
+hc <- vta_consum[vta_consum$group == "HC", ]
+mdd <- vta_consum[vta_consum$group == "MDD", ]
+
+# the data are normally distributed -- yes, the p values are greater than 0.05 
+
+shapiro.test(hc$feedback) # => p = 0.422
+shapiro.test(hc$TEPS.Consummatory) # => p = 0.06
+shapiro.test(mdd$feedback) # p =0.998
+shapiro.test(mdd$TEPS.Consummatory) # p = 0.85
+
+# HC
+res <- cor.test(hc$feedback, hc$TEPS.Consummatory, 
+                    method = "pearson")
+res
+res$p.value # 0.53
+
+# MDD
+res <- cor.test(mdd$feedback, mdd$TEPS.Consummatory, 
+                    method = "pearson")
+res
+res$p.value # 0.022
+
+### plot
+
+ggplot(vta_consum, aes(x=TEPS.Consummatory, y=feedback, color=group)) +
+  geom_point(size = 5) + 
+  geom_smooth(method=lm, aes(fill=group), se = FALSE) + 
+  scale_color_manual(values=c('lightblue3','burlywood2')) + 
+  labs(x='Consummatory Anhedonia', y='VTA Response to Feedback', title='') +
+  theme_light() +
+  theme(axis.text = element_text(size = 16)) + 
+  theme(legend.position=c(0.1,0.9), legend.justification=c(0.1,0.9)) 
+
+```
+
+
+HC: R = -0.36 p=0.071
+MDD: R=0.127 p=0.54
+
+```{r Anticipatory}
+
+shapiro.test(hc$feedback) # => p = 0.422
+shapiro.test(hc$TEPS.Anticipatory) # => p = 0.379
+shapiro.test(mdd$feedback) # p =0.998
+shapiro.test(mdd$TEPS.Anticipatory) # p = 0.997
+
+# HC
+res <- cor.test(hc$feedback, hc$TEPS.Anticipatory, 
+                    method = "pearson")
+res
+res$p.value # 0.071
+
+# MDD
+res <- cor.test(mdd$feedback, mdd$TEPS.Anticipatory, 
+                    method = "pearson")
+res
+res$p.value # 0.022
+
+### plot
+
+ggplot(vta_consum, aes(x=TEPS.Anticipatory, y=feedback, color=group)) +
+  geom_point(size = 5) + 
+  geom_smooth(method=lm, aes(fill=group), se = FALSE) + 
+  scale_color_manual(values=c('lightblue3','burlywood2')) + 
+  labs(x='Anticipatory Anhedonia', y='VTA Response to Feedback', title='') +
+  theme_light() +
+  theme(axis.text = element_text(size = 16)) + 
+  theme(legend.position=c(0.1,0.9), legend.justification=c(0.1,0.9)) 
+
+
+```
+
+# GROUP DIFFERENCES W/T-TESTS
+
+unpaired samples t-test is used:
+1. when 2 groups are normally distributed (p > 0.05 implying distributions aren't sig. different from the normal distribution)
+2. when the variances of two groups are equal (check using F test, p > 0.05 )
+
+Ref: http://www.sthda.com/english/wiki/unpaired-two-samples-t-test-in-r
+
+## ROI summary stats
+
+```{r}
+# select for specific regions of interest
+roi_filtered <- roi %>%
+  filter(
+    ROI %in% c(
+      "vta_mni",
+      "vta_aveHCPT",
+      "amyg",
+      "LB_amyg",
+      "vmPFC",
+      "rl_accumbens",
+      "antrInsula"
+    )
+  )
+
+# melt just to plot / generate a summary of means & stds
+roi_contrasts_m <-
+  reshape2::melt(roi_filtered,
+                 id = c('subj_ID', 'group', 'ROI'),
+                 variable.name = "contrast")
+
+roi_contrasts_sum <- roi_contrasts_m %>% 
+  group_by(group, contrast, ROI) %>%
+  summarise(mean_contrast = mean(value), sd_contrast= sd(value)) %>% arrange(contrast, ROI)
+
+# write.csv(roi_contrasts_sum, file = "roi_summary_stats.csv", row.names=F)
+
+```
+
+### plot & assess for outliers
+
+## box plot
+```{r}
+
+ggplot(roi_contrasts_m, aes(x = contrast, y = value, fill = group)) +
+  geom_boxplot(outlier.shape = NA) +
+    geom_dotplot(binaxis='y', stackdir='center',
+                 position=position_dodge(0.9), dotsize = 0.3) +
+  
+  scale_fill_manual(values=c('lightblue3','peachpuff')) +
+
+  facet_wrap(~ROI, scales = "free_y") +
+  labs(title = "ROI signal intensity by contrast and group",
+       x = "Contrast",
+       y = "Signal") +
+  theme_minimal() + 
+    theme(
+    # axis.text = element_text(size = 15),
+    axis.title = element_text(size = 15),
+    strip.text = element_text(size = 12),
+    legend.title = element_blank(),
+    legend.text = element_text(size=15),
+  )
+
+```
+
+## mean + sd
+```{r}
+ggplot(roi_contrasts_sum, aes(x = contrast, y = mean_contrast, fill = group)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  
+  geom_errorbar(
+    aes(ymin = mean_contrast - sd_contrast, ymax = mean_contrast + sd_contrast),
+    width = .1,
+    position = position_dodge(.9)
+  ) +
+  
+  scale_fill_manual(values=c('lightblue3','peachpuff')) +
+
+  facet_wrap(~ROI, scales = "free_y") +
+  labs(title = "Mean ROI signal intensity by contrast and group",
+       x = "Contrast",
+       y = "Signal") +
+  theme_minimal() + 
+    theme(
+    axis.text.x = element_text(angle=45, hjust=1),
+    axis.title = element_text(size = 15),
+    strip.text = element_text(size = 12),
+    legend.title = element_blank(),
+    legend.text = element_text(size=15),
+  )
+
+```
+
+## outlier detection
+
+```{r}
+
+roi_out_3 <- roi_contrasts_m %>%
+  group_by(group, contrast, ROI) %>%
+  mutate(
+    mean_value = mean(value),
+    sd_value = sd(value),
+    is_outlier = value > (mean_value + 3 * sd_value) |
+      value < (mean_value - 3 * sd_value)
+  )
+
+# Identify outliers 
+outliers_3 <- roi_out_3 %>% filter(is_outlier == T)
+
+# View the outliers
+print(outliers_3)
+```
+
+### remove outliers & generate summary
+
+```{r}
+roi_o <-
+  anti_join(roi_out_3,
+            outliers_3,
+            by = c("subj_ID", "group", "contrast", "ROI", "value")) %>%
+  select("subj_ID", "group", "ROI", "contrast", "value")
+
+# quick check, subj 549 cg25_2, stimgain should be omitted in roi_o
+roi_o %>% filter(subj_ID == 549 & ROI == "cg25_2")
+
+```
+
+```{r}
+
+## summary statistics for dataset without outliers
+roi_o_sum <- roi_o %>% 
+  group_by(group, contrast, ROI) %>%
+  summarise(mean_contrast = mean(value), sd_contrast= sd(value)) %>% arrange(contrast, ROI)
+
+```
+
+### replot
+
+```{r}
+ggplot(roi_o_sum, aes(x = contrast, y = mean_contrast, fill = group)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  
+  geom_errorbar(
+    aes(ymin = mean_contrast - sd_contrast, ymax = mean_contrast + sd_contrast),
+    width = .1,
+    position = position_dodge(.9)
+  ) +
+  
+  scale_fill_manual(values=c('lightblue3','peachpuff')) +
+
+  facet_wrap(~ROI, scales = "free_y") +
+  labs(title = "Mean ROI signal intensity by contrast and group",
+       x = "Contrast",
+       y = "Signal") +
+  theme_minimal() + 
+    theme(
+    axis.text.x = element_text(angle=45, hjust=1),
+    axis.title = element_text(size = 15),
+    strip.text = element_text(size = 12),
+    legend.title = element_blank(),
+    legend.text = element_text(size=15),
+  )
+
+```
+
+```{r unmelt}
+
+roi_o_w <- reshape2::dcast(roi_o, subj_ID + group + ROI ~ contrast)
+roi_o_w <- roi_o_w[order(roi_o_w$ROI, roi_o_w$subj_ID),]
+
+col_order <-
+  c(
+    "group",
+    "subj_ID",
+    "stimGain",
+    "stimLoss",
+    "stimNeutral",
+    "keyGo",
+    "fb_loss_rpe",
+    "fb_gain_rpe",
+    "fb_all_rpe",
+    "ROI"
+  )
+
+roi_o_w <- roi_o_w[, col_order]
+```
+
+# T-TESTS exploring group differences
+- use roi_o_w (roi dataframe with outliers removed)
+
+## Function
+```{r function}
+
+roi_analysis <- function(df, roi, contrast, group_col) {
+  
+  # subset the dataframe for the ROI and contrast of interest
+  
+  df_sub = df[df$ROI == roi, c(group_col, contrast)]
+  
+  roi_summary <- df_sub %>%
+  group_by(!!rlang::sym(group_col)) %>%
+    get_summary_stats(!!rlang::sym(contrast), type = "mean_sd")
+  
+  HC_normalcy_test <-
+    with(df_sub, shapiro.test(df_sub[[contrast]][group == "HC"]))
+  MDD_normalcy_test <-
+    with(df_sub, shapiro.test(df_sub[[contrast]][group == "MDD"]))
+  
+  res.ftest <-
+    var.test(df_sub[[contrast]] ~ df_sub[[group_col]])
+
+  res_ttest <-
+    t.test(df_sub[[contrast]] ~ df_sub[[group_col]])
+  
+  if (HC_normalcy_test$p.value < 0.05 |
+      MDD_normalcy_test$p.value < 0.05 |
+      res.ftest$p.value < 0.05) {
+    print("Conducting non-parametric test...")
+    
+    wilcox_result <-
+      wilcox.test(df_sub[[contrast]] ~ df_sub[[group_col]])
+    t_test_result <- NULL
+  } else {
+    print("Conducting t-test...")
+    wilcox_result <- NULL
+    t_test_result <- t.test(df_sub[[contrast]] ~ df_sub[[group_col]], var.equal = T)
+  }
+
+  results <- list(
+    summary_stats = roi_summary,
+    HC_normalcy_test = HC_normalcy_test,
+    MDD_normalcy_test = MDD_normalcy_test,
+    var_test_result = res.ftest,
+    wilcox_result = wilcox_result,
+    t_test_result = t_test_result
+  )
+
+  return(results)
+}
+
+```
+
+
+## VTA MNI
+t=0.33 p=0.743
+
+```{r}
+vta_mni <- roi_o_w[roi_o_w$ROI == "vta_mni", ]
+
+vta_mni <- vta_mni %>% select('group', 'fb_gain_rpe')
+
+vta_fb_gain_summ <- vta_mni %>%
+  group_by(group) %>%
+  get_summary_stats(fb_gain_rpe, type = "mean_sd")
+
+# test for normalcy: Data are normally distributed
+
+with(vta_mni, shapiro.test(fb_gain_rpe[group == "HC"])) # p = 0.48
+with(vta_mni, shapiro.test(fb_gain_rpe[group == "MDD"])) # p = 0.77
+
+# variances: F=1.21 p = 0.574 ; no significant difference between the variances 
+res.ftest <- var.test(fb_gain_rpe ~ group, data = vta_mni)
+res.ftest
+
+res <- t.test(fb_gain_rpe ~ group, data = vta_mni, var.equal = T) # t = 1.2134 p= 0.23
+res 
+```
+
+```{r loss rpe}
+
+vta_mni <- roi_o_w[roi_o_w$ROI == "vta_mni", ]
+
+vta_mni <- vta_mni %>% select('group', 'fb_loss_rpe')
+
+vta_fb_loss_summ <- vta_mni %>%
+  group_by(group) %>%
+  get_summary_stats(fb_loss_rpe, type = "mean_sd")
+
+# test for normalcy: Data are normally distributed
+
+with(vta_mni, shapiro.test(fb_loss_rpe[group == "HC"])) # p = 0.75
+with(vta_mni, shapiro.test(fb_loss_rpe[group == "MDD"])) # p = 0.67
+
+# variances: F=0.80 p = 0.521 so no significant difference between the variances 
+res.ftest <- var.test(fb_loss_rpe ~ group, data = vta_mni)
+res.ftest
+
+res <- t.test(fb_loss_rpe ~ group, data = vta_mni, var.equal = T) # t = -0.68924 p= 0.493
+res 
+
+```
+
+```{r all RPE}
+vta_fb_all_summ <- vta_mni %>%
+  group_by(group) %>%
+  get_summary_stats(fb_all_rpe, type = "mean_sd")
+
+with(vta_mni, shapiro.test(fb_all_rpe[group == "HC"])) # p = 0.03308
+with(vta_mni, shapiro.test(fb_all_rpe[group == "MDD"])) # p = 0.2738
+
+# variances: F=1.2991 p = 0.4341 so no significant difference between the variances 
+res.ftest <- var.test(fb_all_rpe ~ group, data = vta_mni)
+res.ftest
+
+res <- t.test(fb_all_rpe ~ group, data = vta_mni, var.equal = T) # t = 0.69995 p= 0.4862
+res 
+
+wilcox.test(vta_mni$fb_all_rpe ~ vta_mni$group)
+```
+
+
+### plots
+
+#### gain rpe
+```{r}
+ggboxplot(vta_mni, x = "group", y = "fb_all_rpe", fill = "group", add = "jitter") +
+  
+ scale_fill_manual(values=c('lightblue3','peachpuff')) +
+
+  labs(x = "",
+       y = "vta rpe",
+       title = "") +
+  
+  theme_classic() +
+  theme(
+    axis.text = element_text(size = 20),
+    axis.title = element_text(size = 24),
+    axis.ticks = element_line(size = 1.5),
+    legend.title = element_blank(),
+    legend.position = "",
+  )
+
+```
+
+```{r mean}
+p <- ggplot(vta_fb_gain_summ, aes(x = group, y = mean, fill = group)) +
+  labs(x = "",
+       y = "vta gain rpe",
+       title = "") +
+  geom_bar(stat = "identity", position = position_dodge()) +
+  geom_errorbar(aes(ymin = mean - sd, ymax = mean + sd),
+                width = .2,
+                position = position_dodge(.9)) +
+  scale_fill_manual(values=c('lightblue3','peachpuff')) +
+  theme_minimal() +
+  theme(
+    axis.text = element_text(size = 20),
+    axis.title = element_text(size = 24),
+    legend.title = element_blank(),
+    legend.text = element_text(size=20),
+    legend.position = c(0.90, 0.95))
+```
+
+#### loss rpe
+
+```{r}
+ggboxplot(vta_mni, x = "group", y = "fb_loss_rpe", fill = "group", add = "jitter") +
+  
+ scale_fill_manual(values=c('lightblue3','peachpuff')) +
+
+  labs(x = "",
+       y = "vta loss rpe",
+       title = "") +
+  
+  theme_classic() +
+  theme(
+    axis.text = element_text(size = 20),
+    axis.title = element_text(size = 24),
+    axis.ticks = element_line(size = 1.5),
+    legend.title = element_blank(),
+    legend.position = "",
+  )
+
+p <- ggplot(vta_fb_loss_summ, aes(x = group, y = mean, fill = group)) +
+  labs(x = "",
+       y = "vta loss rpe",
+       title = "") +
+  geom_bar(stat = "identity", position = position_dodge()) +
+  geom_errorbar(aes(ymin = mean - sd, ymax = mean + sd),
+                width = .2,
+                position = position_dodge(.9)) +
+  scale_fill_manual(values=c('lightblue3','peachpuff')) +
+  theme_minimal() +
+  theme(
+    axis.text = element_text(size = 20),
+    axis.title = element_text(size = 24),
+    legend.title = element_blank(),
+    legend.text = element_text(size=20),
+    legend.position = c(0.90, 0.95),
+  )
+
+```
+
+```{r}
+
+roi_analysis(df = roi_o_w, roi = "vta_mni", contrast = "fb_all_rpe", group = "group")
+roi_analysis(df = roi_o_w, roi = "vta_mni", contrast = "fb_gain_rpe", group = "group")
+
+roi_analysis(df = roi_o_w, roi = "vta_mni", contrast = "stimGain", group = "group")
+roi_analysis(df = roi_o_w, roi = "vta_mni", contrast = "stimLoss", group = "group")
+
+
+```
+
+
+## vta_aveHCPT
+
+```{r}
+roi_analysis(df = roi_o_w, roi = "vta_aveHCPT", contrast = "fb_gain_rpe", group = "group")
+roi_analysis(df = roi_o_w, roi = "vta_aveHCPT", contrast = "fb_loss_rpe", group = "group")
+roi_analysis(df = roi_o_w, roi = "vta_aveHCPT", contrast = "fb_all_rpe", group = "group")
+
+roi_analysis(df = roi_o_w, roi = "vta_aveHCPT", contrast = "stimGain", group = "group")
+roi_analysis(df = roi_o_w, roi = "vta_aveHCPT", contrast = "stimLoss", group = "group")
+
+```
+
+## RL Accumbens
+
+```{r}
+
+roi_analysis(df = roi_o_w, roi = "rl_accumbens", contrast = "fb_gain_rpe", group = "group")
+roi_analysis(df = roi_o_w, roi = "rl_accumbens", contrast = "fb_loss_rpe", group = "group")
+roi_analysis(df = roi_o_w, roi = "rl_accumbens", contrast = "fb_all_rpe", group = "group")
+
+roi_analysis(df = roi_o_w, roi = "rl_accumbens", contrast = "stimGain", group = "group")
+roi_analysis(df = roi_o_w, roi = "rl_accumbens", contrast = "stimLoss", group = "group")
+```
+
+```{r}
+with(nac, shapiro.test(fb_all_rpe[group == "HC"])) # p = 0.004828
+with(nac, shapiro.test(fb_all_rpe[group == "MDD"])) # p = 0.8932
+
+# variances: F=1.1395 p = 0.6949 so no significant difference between the variances 
+res.ftest <- var.test(fb_all_rpe ~ group, data = nac)
+res.ftest
+
+res <- t.test(fb_all_rpe ~ group, data = nac, var.equal = T) # t = 1.8728 p= 0.06521
+res 
+
+wilcox.test(nac$fb_all_rpe ~ nac$group)
+
+```
+
+
+```{r}
+nac <- roi_o_w[roi_o_w$ROI == "rl_accumbens", ]
+
+ggboxplot(nac, x = "group", y = "fb_all_rpe", fill = "group", add = "jitter") +
+  
+ scale_fill_manual(values=c('lightblue3','peachpuff')) +
+
+  labs(x = "",
+       y = "nac rpe",
+       title = "") +
+  
+  theme_classic() +
+  theme(
+    axis.text = element_text(size = 20),
+    axis.title = element_text(size = 24),
+    axis.ticks = element_line(size = 1.5),
+    legend.title = element_blank(),
+    legend.position = "",
+  )
+
+```
+
+
+## vmPFC
+
+```{r}
+roi_analysis(df = roi_o_w, roi = "vmPFC", contrast = "fb_gain_rpe", group = "group")
+roi_analysis(df = roi_o_w, roi = "vmPFC", contrast = "fb_loss_rpe", group = "group")
+roi_analysis(df = roi_o_w, roi = "vmPFC", contrast = "fb_all_rpe", group = "group")
+
+roi_analysis(df = roi_o_w, roi = "vmPFC", contrast = "stimGain", group = "group")
+roi_analysis(df = roi_o_w, roi = "vmPFC", contrast = "stimLoss", group = "group")
+
+```
+
+### plot
+```{r}
+
+group_order <- c("HC", "MDD")
+
+# Convert the 'group' variable to a factor with the specified order
+roi_o_w$group <- factor(roi_o_w$group, levels = group_order)
+
+vmpfc <- roi_o_w[roi_o_w$ROI == "vmPFC", ]
+
+## gain rpe
+ggboxplot(vmpfc, x = "group", y = "fb_gain_rpe", fill = "group", add = "jitter") +
+  
+ scale_fill_manual(values=c('lightblue3','peachpuff')) +
+
+  labs(x = "",
+       y = "vmpfc gina rpe",
+       title = "") +
+  
+  theme_classic() +
+  theme(
+    axis.text = element_text(size = 20),
+    axis.title = element_text(size = 24),
+    axis.ticks = element_line(size = 1.5),
+    legend.title = element_blank(),
+    legend.position = "",
+  )
+
+## loss rpe
+vmpfc <- roi_o_w[roi_o_w$ROI == "vmPFC", ]
+
+ggboxplot(vmpfc, x = "group", y = "fb_loss_rpe", fill = "group", add = "jitter") +
+  
+ scale_fill_manual(values=c('lightblue3','peachpuff')) +
+
+  labs(x = "",
+       y = "vmpfc loss rpe",
+       title = "") +
+  
+  theme_classic() +
+  theme(
+    axis.text = element_text(size = 20),
+    axis.title = element_text(size = 24),
+    axis.ticks = element_line(size = 1.5),
+    legend.title = element_blank(),
+    legend.position = "",
+  )
+
+# full rpe 
+ggboxplot(vmpfc, x = "group", y = "fb_all_rpe", fill = "group", add = "jitter") +
+  
+ scale_fill_manual(values=c('lightblue3','peachpuff')) +
+
+  labs(x = "",
+       y = "vmpfc all rpe",
+       title = "") +
+  
+  theme_classic() +
+  theme(
+    axis.text = element_text(size = 20),
+    axis.title = element_text(size = 24),
+    axis.ticks = element_line(size = 1.5),
+    legend.title = element_blank(),
+    legend.position = "",
+  )
+
+```
+
+
+## sgACC
+
+```{r}
+
+sgACC <- roi_o_w[roi_o_w$ROI == "sgACC", ]
+
+
+roi_analysis(df = roi_o_w, roi = "sgACC", contrast = "fb_gain_rpe", group = "group") # W = 905, p-value = 0.007951
+roi_analysis(df = roi_o_w, roi = "sgACC", contrast = "fb_loss_rpe", group = "group")
+
+roi_analysis(df = roi_o_w, roi = "sgACC", contrast = "stimGain", group = "group")
+roi_analysis(df = roi_o_w, roi = "sgACC", contrast = "stimLoss", group = "group")
+
+```
+
+```{r}
+
+group_order <- c("HC", "MDD")
+
+# Convert the 'group' variable to a factor with the specified order
+roi_o_w$group <- factor(roi_o_w$group, levels = group_order)
+
+## gain rpe
+ggboxplot(sgACC, x = "group", y = "fb_gain_rpe", fill = "group", add = "jitter") +
+  
+ scale_fill_manual(values=c('lightblue3','peachpuff')) +
+
+  labs(x = "",
+       y = "sgACC gain rpe",
+       title = "") +
+  
+  theme_classic() +
+  theme(
+    axis.text = element_text(size = 20),
+    axis.title = element_text(size = 24),
+    axis.ticks = element_line(size = 1.5),
+    legend.title = element_blank(),
+    legend.position = "",
+  )
+
+## loss rpe
+
+ggboxplot(sgACC, x = "group", y = "fb_loss_rpe", fill = "group", add = "jitter") +
+  
+ scale_fill_manual(values=c('lightblue3','peachpuff')) +
+
+  labs(x = "",
+       y = "sgACC loss rpe",
+       title = "") +
+  
+  theme_classic() +
+  theme(
+    axis.text = element_text(size = 20),
+    axis.title = element_text(size = 24),
+    axis.ticks = element_line(size = 1.5),
+    legend.title = element_blank(),
+    legend.position = "",
+  )
+
+
+```
+
+
+## Amygdala 
+
+```{r}
+amy <- roi_o_w[roi_o_w$ROI == "amyg", ]
+
+roi_analysis(df = roi_o_w, roi = "amyg", contrast = "fb_all_rpe", group = "group") 
+roi_analysis(df = roi_o_w, roi = "amyg", contrast = "fb_gain_rpe", group = "group") 
+roi_analysis(df = roi_o_w, roi = "amyg", contrast = "fb_loss_rpe", group = "group")
+
+roi_analysis(df = roi_o_w, roi = "amyg", contrast = "stimGain", group = "group")
+roi_analysis(df = roi_o_w, roi = "amyg", contrast = "stimLoss", group = "group")
+
+```
+
+```{r}
+group_order <- c("HC", "MDD")
+
+# Convert the 'group' variable to a factor with the specified order
+roi_o_w$group <- factor(roi_o_w$group, levels = group_order)
+
+## gain rpe
+ggboxplot(amy, x = "group", y = "fb_gain_rpe", fill = "group", add = "jitter") +
+  
+ scale_fill_manual(values=c('lightblue3','peachpuff')) +
+
+  labs(x = "",
+       y = "amygdala gain rpe",
+       title = "") +
+  
+  theme_classic() +
+  theme(
+    axis.text = element_text(size = 20),
+    axis.title = element_text(size = 24),
+    axis.ticks = element_line(size = 1.5),
+    legend.title = element_blank(),
+    legend.position = "",
+  )
+
+## loss rpe
+
+ggboxplot(amy, x = "group", y = "fb_loss_rpe", fill = "group", add = "jitter") +
+  
+ scale_fill_manual(values=c('lightblue3','peachpuff')) +
+
+  labs(x = "",
+       y = "amygdala loss rpe",
+       title = "") +
+  
+  theme_classic() +
+  theme(
+    axis.text = element_text(size = 20),
+    axis.title = element_text(size = 24),
+    axis.ticks = element_line(size = 1.5),
+    legend.title = element_blank(),
+    legend.position = "",
+  )
+
+# full rpe
+
+ggboxplot(amy, x = "group", y = "fb_all_rpe", fill = "group", add = "jitter") +
+  
+ scale_fill_manual(values=c('lightblue3','peachpuff')) +
+
+  labs(x = "",
+       y = "amygdala rpe",
+       title = "") +
+  
+  theme_classic() +
+  theme(
+    axis.text = element_text(size = 20),
+    axis.title = element_text(size = 24),
+    axis.ticks = element_line(size = 1.5),
+    legend.title = element_blank(),
+    legend.position = "",
+  )
+
+
+```
+
+## LBamyg
+
+```{r}
+lb_amyg <- roi_o_w[roi_o_w$ROI == "LB_amyg", ]
+
+roi_analysis(df = roi_o_w, roi = "LB_amyg", contrast = "fb_all_rpe", group = "group")
+roi_analysis(df = roi_o_w, roi = "LB_amyg", contrast = "fb_gain_rpe", group = "group") 
+roi_analysis(df = roi_o_w, roi = "LB_amyg", contrast = "fb_loss_rpe", group = "group")
+
+roi_analysis(df = roi_o_w, roi = "LB_amyg", contrast = "stimGain", group = "group")
+roi_analysis(df = roi_o_w, roi = "LB_amyg", contrast = "stimLoss", group = "group")
+
+```
+
+## Ant Insula
+```{r}
+
+ant_insula <- roi_o_w[roi_o_w$ROI == "antrInsula", ]
+
+roi_analysis(df = roi_o_w, roi = "antrInsula", contrast = "fb_all_rpe", group = "group")
+roi_analysis(df = roi_o_w, roi = "antrInsula", contrast = "fb_gain_rpe", group = "group") 
+roi_analysis(df = roi_o_w, roi = "antrInsula", contrast = "fb_loss_rpe", group = "group")
+
+roi_analysis(df = roi_o_w, roi = "antrInsula", contrast = "stimGain", group = "group")
+roi_analysis(df = roi_o_w, roi = "antrInsula", contrast = "stimLoss", group = "group")
+
+
+```
+
+## Habenula
+
+```{r}
+
+habenula <- roi_o_w[roi_o_w$ROI == "hb_mni", ]
+
+
+roi_analysis(df = roi_o_w, roi = "hb_mni", contrast = "fb_gain_rpe", group = "group") 
+roi_analysis(df = roi_o_w, roi = "hb_mni", contrast = "fb_loss_rpe", group = "group")
+
+roi_analysis(df = roi_o_w, roi = "hb_mni", contrast = "stimGain", group = "group")
+roi_analysis(df = roi_o_w, roi = "hb_mni", contrast = "stimLoss", group = "group")
+
+wilcox.test(stimGain ~ group, data = habenula)
+habenula %>% wilcox_effsize(stimGain ~ group)
+
+```
+
+## cg25
+
+```{r}
+cg25 <- roi_o_w[roi_o_w$ROI == "cg25_2", ]
+
+
+roi_analysis(df = roi_o_w, roi = "cg25_2", contrast = "fb_gain_rpe", group = "group") 
+roi_analysis(df = roi_o_w, roi = "cg25_2", contrast = "fb_loss_rpe", group = "group")
+
+roi_analysis(df = roi_o_w, roi = "cg25_2", contrast = "stimGain", group = "group")
+roi_analysis(df = roi_o_w, roi = "cg25_2", contrast = "stimLoss", group = "group")
+
+```
+
+## cg_3
+```{r}
+
+cg3 <- roi_o_w[roi_o_w$ROI == "cg_3", ]
+
+
+roi_analysis(df = roi_o_w, roi = "cg_3", contrast = "fb_gain_rpe", group = "group") 
+roi_analysis(df = roi_o_w, roi = "cg_3", contrast = "fb_loss_rpe", group = "group")
+
+roi_analysis(df = roi_o_w, roi = "cg_3", contrast = "stimGain", group = "group")
+roi_analysis(df = roi_o_w, roi = "cg_3", contrast = "stimLoss", group = "group")
+
+
+```
+
+### plot 
+```{r}
+
+group_order <- c("HC", "MDD")
+
+# Convert the 'group' variable to a factor with the specified order
+roi_o_w$group <- factor(roi_o_w$group, levels = group_order)
+
+## gain rpe
+ggboxplot(cg3, x = "group", y = "fb_gain_rpe", fill = "group", add = "jitter") +
+  
+ scale_fill_manual(values=c('lightblue3','peachpuff')) +
+
+  labs(x = "",
+       y = "cg3 gain rpe",
+       title = "") +
+  
+  theme_classic() +
+  theme(
+    axis.text = element_text(size = 20),
+    axis.title = element_text(size = 24),
+    axis.ticks = element_line(size = 1.5),
+    legend.title = element_blank(),
+    legend.position = "",
+  )
+
+
+```
+
+# Group analysis without outlier removal - use roi_filtered
+
+```{r nac fb gain}
+
+nac <- roi_filtered[roi_filtered$ROI == "rl_accumbens", ]
+
+nac <- nac %>% select('group', 'fb_gain_rpe')
+
+nac_fb_gain_summ <- nac %>%
+  group_by(group) %>%
+  get_summary_stats(fb_gain_rpe, type = "mean_sd")
+
+# test for normalcy: Data are normally distributed
+
+ggqqplot(nac$fb_gain_rpe)
+
+with(nac, shapiro.test(fb_gain_rpe[group == "HC"])) # p = 0.93
+with(nac, shapiro.test(fb_gain_rpe[group == "MDD"])) # p = 0.51
+
+# variances: F=1.21 p = 0.574 ; no significant difference between the variances 
+res.ftest <- var.test(fb_gain_rpe ~ group, data = nac)
+res.ftest
+
+res <- t.test(fb_gain_rpe ~ group, data = nac, var.equal = T) # t = 1.4116, df = 72, p = 0.1624
+res 
+```
+
+```{r nac fb loss}
+nac <- roi_filtered[roi_filtered$ROI == "rl_accumbens", ]
+
+nac <- nac %>% select('group', 'fb_loss_rpe')
+
+nac_fb_gain_summ <- nac %>%
+  group_by(group) %>%
+  get_summary_stats(fb_loss_rpe, type = "mean_sd")
+
+# test for normalcy: Data are normally distributed
+
+ggqqplot(nac$fb_loss_rpe)
+
+with(nac, shapiro.test(fb_loss_rpe[group == "HC"])) # p = 0.025
+with(nac, shapiro.test(fb_loss_rpe[group == "MDD"])) # p = 0.31
+
+# variances: F=0.893 p = 0.739 ; no significant difference between the variances 
+res.ftest <- var.test(fb_loss_rpe ~ group, data = nac)
+res.ftest
+
+res <- t.test(fb_loss_rpe ~ group, data = nac, var.equal = T) # t = 1.4066, df = 72, p = 0.1639
+res 
+
+wilcox.test(fb_loss_rpe ~ group, data = nac)
+```
+
+```{r nac full rpe}
+
+nac <- roi_filtered[roi_filtered$ROI == "rl_accumbens", ]
+
+nac <- nac %>% select('group', 'fb_all_rpe')
+
+nac_fb_all_summ <- nac %>%
+  group_by(group) %>%
+  get_summary_stats(fb_all_rpe, type = "mean_sd")
+
+# test for normalcy: Data are normally distributed
+
+ggqqplot(nac$fb_all_rpe)
+
+with(nac, shapiro.test(fb_all_rpe[group == "HC"])) # p = 0.004828
+with(nac, shapiro.test(fb_all_rpe[group == "MDD"])) # p = 0.8932
+
+# variances: F=1.14 p = 0.695 ; no significant difference between the variances 
+res.ftest <- var.test(fb_all_rpe ~ group, data = nac)
+res.ftest
+
+res <- t.test(fb_all_rpe ~ group, data = nac, var.equal = T) # t = 1.8762, df = 72, p = 0.06469
+res 
+
+wilcox.test(fb_all_rpe ~ group, data = nac)
+```
+
+```{r vta}
+roi_analysis(df = roi_filtered, roi = "vta_mni", contrast = "fb_loss_rpe", group = "group")
+
+roi_analysis(df = roi_filtered, roi = "vta_aveHCPT", contrast = "fb_loss_rpe", group = "group")
+
+```
+
+```{r vmpfc}
+
+vmpfc <- roi_filtered[roi_filtered$ROI == "vmPFC", ]
+
+ggqqplot(vmpfc$fb_loss_rpe)
+hist(vmpfc$fb_loss_rpe)
+
+roi_analysis(df = roi_filtered, roi = "vmPFC", contrast = "fb_loss_rpe", group = "group")
+t.test(fb_loss_rpe ~ group, data = vmpfc, var.equal = T)
+
+roi_analysis(df = roi_filtered, roi = "vmPFC", contrast = "fb_gain_rpe", group = "group")
+ggqqplot(vmpfc$fb_gain_rpe)
+t.test(fb_gain_rpe ~ group, data = vmpfc, var.equal = T)
+```
+
+```{r antr_insula}
+
+antr_insula <- roi_filtered[roi_filtered$ROI == "antrInsula", ]
+
+ggqqplot(antr_insula$fb_gain_rpe)
+hist(antr_insula$fb_gain_rpe)
+
+roi_analysis(df = roi_filtered, roi = "antrInsula", contrast = "fb_gain_rpe", group = "group")
+
+t.test(fb_gain_rpe ~ group, data = antr_insula, var.equal = T)
+
+```
+
+```{r amygdala}
+
+amygdala <- roi_filtered[roi_filtered$ROI == "amyg", ]
+
+ggqqplot(amygdala$fb_gain_rpe) # defs one outlier affecting distribution
+hist(amygdala$fb_gain_rpe)
+
+roi_analysis(df = roi_filtered, roi = "amyg", contrast = "fb_gain_rpe", group = "group")
+
+t.test(fb_gain_rpe ~ group, data = amygdala, var.equal = T)
+
+# all RPE
+ggqqplot(amygdala$fb_all_rpe) # looks okay actually
+hist(amygdala$fb_all_rpe) # outlier
+
+roi_analysis(df = roi_filtered, roi = "amyg", contrast = "fb_all_rpe", group = "group")
+
+t.test(fb_gain_rpe ~ group, data = amygdala, var.equal = T)
+
+```
+
+```{r bla}
+
+bla <- roi_filtered[roi_filtered$ROI == "LB_amyg", ]
+
+ggqqplot(bla$fb_gain_rpe) # defs one outlier affecting distribution
+hist(bla$fb_gain_rpe)
+
+roi_analysis(df = roi_filtered, roi = "LB_amyg", contrast = "fb_gain_rpe", group = "group")
+
+t.test(fb_gain_rpe ~ group, data = bla, var.equal = T)
+
+# all RPE
+ggqqplot(bla$fb_all_rpe) # not great
+hist(bla$fb_all_rpe) # outlier
+
+roi_analysis(df = roi_filtered, roi = "LB_amyg", contrast = "fb_all_rpe", group = "group")
+
+t.test(fb_all_rpe ~ group, data = bla, var.equal = F)
+
+
+# stim loss
+ggqqplot(bla$stimLoss) # not great
+hist(bla$stimLoss) # skewed
+
+roi_analysis(df = roi_filtered, roi = "LB_amyg", contrast = "stimLoss", group = "group")
+
+t.test(stimLoss ~ group, data = bla, var.equal = F)
+
+
+```
+
+# Partial correlations 
+- use df_covs2
+
+```{r function}
+pcor_test <- function(df, roi, contrast, scale, group_col, sex_col) {
+  
+  # subset the dataframe for the ROI and contrast of interest
+  
+  df_sub = df[df$ROI == roi,c(sex_col, group_col, contrast, scale)]
+  
+  HC_normalcy_contrast_test <-
+    with(df_sub, shapiro.test(df_sub[[contrast]][group == "HC"]))
+  
+  MDD_normalcy_contrast_test <-
+    with(df_sub, shapiro.test(df_sub[[contrast]][group == "MDD"]))
+  
+  HC_normalcy_scale_test <- with(df_sub, shapiro.test(df_sub[[scale]][group == "HC"]))
+  MDD_normalcy_scale_test <- with(df_sub, shapiro.test(df_sub[[scale]][group == "MDD"]))
+
+  if (HC_normalcy_contrast_test$p.value < 0.05 |
+      HC_normalcy_scale_test$p.value < 0.05) {
+    print("Conducting non-parametric test...")
+    hc_spearman_result <-
+      pcor.test(df_sub[[contrast]][df_sub[[group_col]] == "HC"],
+               df_sub[[scale]][df_sub[[group_col]] == "HC"],
+               df_sub[[sex_col]][df_sub[[group_col]] == "HC"],
+               method = "spearman")
+    hc_pearson_result <- NULL
+    
+  } else {
+    print("Conducting pearson correlation test...")
+    hc_spearman_result <- NULL
+    hc_pearson_result <-
+      pcor.test(df_sub[[contrast]][df_sub[[group_col]] == "HC"],
+               df_sub[[scale]][df_sub[[group_col]] == "HC"],
+               df_sub[[sex_col]][df_sub[[group_col]] == "HC"],
+               method = "pearson")
+  }
+  
+  if (MDD_normalcy_contrast_test$p.value < 0.05 |
+    MDD_normalcy_scale_test$p.value < 0.05) {
+    print("Conducting non-parametric test...")
+    
+    mdd_spearman_result <-
+      pcor.test(df_sub[[contrast]][df_sub[[group_col]] == "MDD"],
+               df_sub[[scale]][df_sub[[group_col]] == "MDD"],
+               df_sub[[sex_col]][df_sub[[group_col]] == "MDD"],
+               method = "spearman")
+    mdd_pearson_result <- NULL
+  } else {
+    print("Conducting pearson correlation test...")
+    mdd_spearman_result <- NULL
+    mdd_pearson_result <-
+      pcor.test(df_sub[[contrast]][df_sub[[group_col]] == "MDD"],
+               df_sub[[scale]][df_sub[[group_col]] == "MDD"], 
+               df_sub[[sex_col]][df_sub[[group_col]] == "MDD"],
+               method = "pearson")
+  }
+
+  results <- list(
+    HC_normalcy_contrast_test = HC_normalcy_contrast_test,
+    HC_normalcy_scale_test = HC_normalcy_scale_test,
+    MDD_normalcy_contrast_test = MDD_normalcy_contrast_test,
+    MDD_normalcy_scale_test = MDD_normalcy_scale_test,
+    hc_spearman_result = hc_spearman_result,
+    hc_pearson_result = hc_pearson_result,
+    mdd_spearman_result = mdd_spearman_result,
+    mdd_pearson_result = mdd_pearson_result
+  )
+
+  return(results)
+}
+
+```
+
+```{r}
+
+df_covs <- df_covs %>% mutate(SUB_gender=recode(SUB_gender, 'F'='1', 'M'='0')) # dummy code sex
+df_covs <- df_covs %>% mutate(Medication=recode(Medication, '0'='1', '1'='2')) # 1 = none, 2 = y
+df_covs$SUB_gender <- as.numeric(df_covs$SUB_gender)
+df_covs$Medication <- as.numeric(df_covs$Medication)
+df_covs2 <- na.omit(df_covs) # remove nan
+
+```
+
+# VTA
+## test controlling for sex
+```{r vta mni - consummatory}
+
+# fb all rpe: HC -1.796, p=0.082, MDD: -0.1136 p 0.5156
+pcor_test(
+  df = df_covs2,
+  roi = "vta_mni",
+  contrast = "fb_all_rpe",
+  scale = "TEPS.Consummatory",
+  group_col = "group",
+  sex_col = "SUB_gender"
+)
+
+# fb gain rpe: HC -0.0881, p 0.6258, MDD: 0.0581, p 0.740
+pcor_test(
+  df = df_covs2,
+  roi = "vta_mni",
+  contrast = "fb_gain_rpe",
+  scale = "TEPS.Consummatory",
+  group_col = "group",
+  sex_col = "SUB_gender"
+)
+
+# fb loss rpe: HC -0.2876 p 0.1045, MDD: -0.181, p 0.297
+
+pcor_test(
+  df = df_covs2,
+  roi = "vta_mni",
+  contrast = "fb_loss_rpe",
+  scale = "TEPS.Consummatory",
+  group_col = "group",
+  sex_col = "SUB_gender"
+)
+```
+
+```{r vta_mni anticipatory}
+# fb all rpe: HC -0.0303, p=0.8668, MDD: -0.0496 p 0.777
+pcor_test(
+  df = df_covs2,
+  roi = "vta_mni",
+  contrast = "fb_all_rpe",
+  scale = "TEPS.Anticipatory",
+  group_col = "group",
+  sex_col = "SUB_gender"
+)
+
+# fb gain rpe: HC 0.0621, p 0.731, MDD: 0.1109, p 0.5256
+pcor_test(
+  df = df_covs2,
+  roi = "vta_mni",
+  contrast = "fb_gain_rpe",
+  scale = "TEPS.Anticipatory",
+  group_col = "group",
+  sex_col = "SUB_gender"
+)
+
+# fb loss rpe: HC -0.092 p 0.610475, MDD: -0.1518914, p 0.3837343
+
+pcor_test(
+  df = df_covs2,
+  roi = "vta_mni",
+  contrast = "fb_loss_rpe",
+  scale = "TEPS.Anticipatory",
+  group_col = "group",
+  sex_col = "SUB_gender"
+)
+```
+
+## test controlling for age
+
+```{r ant}
+# fb all rpe: HC -0.3196058, p=0.06981793, MDD: -0.0910885 p 0.6027849
+pcor_test(
+  df = df_covs2,
+  roi = "vta_mni",
+  contrast = "fb_all_rpe",
+  scale = "TEPS.Consummatory",
+  group_col = "group",
+  sex_col = "SUB_Age"
+)
+
+# fb gain rpe: HC -0.1036987, p 0.565774, MDD: 0.06144647, p 0.7258497
+pcor_test(
+  df = df_covs2,
+  roi = "vta_mni",
+  contrast = "fb_gain_rpe",
+  scale = "TEPS.Consummatory",
+  group_col = "group",
+  sex_col = "SUB_Age"
+)
+
+# fb loss rpe: HC -0.2940613 p 0.0966983, MDD: -0.1586564, p 0.3626537
+
+pcor_test(
+  df = df_covs2,
+  roi = "vta_mni",
+  contrast = "fb_loss_rpe",
+  scale = "TEPS.Consummatory",
+  group_col = "group",
+  sex_col = "SUB_Age"
+)
+```
+
+```{r vta anticipatory}
+# fb all rpe: HC 
+pcor_test(
+  df = df_covs2,
+  roi = "vta_mni",
+  contrast = "fb_all_rpe",
+  scale = "TEPS.Anticipatory",
+  group_col = "group",
+  sex_col = "SUB_Age"
+)
+
+# fb gain rpe: HC
+pcor_test(
+  df = df_covs2,
+  roi = "vta_mni",
+  contrast = "fb_gain_rpe",
+  scale = "TEPS.Anticipatory",
+  group_col = "group",
+  sex_col = "SUB_Age"
+)
+
+# fb loss rpe:
+
+pcor_test(
+  df = df_covs2,
+  roi = "vta_mni",
+  contrast = "fb_loss_rpe",
+  scale = "TEPS.Anticipatory",
+  group_col = "group",
+  sex_col = "SUB_Age"
+)
+
+```
+
+## test controlling for medication 
+
+```{r}
+# fb all rpe: HC -0.3196058, p=0.06981793, MDD: -0.0910885 p 0.6027849
+pcor_test(
+  df = df_covs2,
+  roi = "vta_mni",
+  contrast = "fb_all_rpe",
+  scale = "TEPS.Consummatory",
+  group_col = "group",
+  sex_col = "Medication"
+)
+
+# fb gain rpe: HC -0.1036987, p 0.565774, MDD: 0.06144647, p 0.7258497
+pcor_test(
+  df = df_covs2,
+  roi = "vta_mni",
+  contrast = "fb_gain_rpe",
+  scale = "TEPS.Consummatory",
+  group_col = "group",
+  sex_col = "Medication"
+)
+
+# fb loss rpe: HC -0.2940613 p 0.0966983, MDD: -0.1586564, p 0.3626537
+
+pcor_test(
+  df = df_covs2,
+  roi = "vta_mni",
+  contrast = "fb_loss_rpe",
+  scale = "TEPS.Consummatory",
+  group_col = "group",
+  sex_col = "Medication"
+)
+```
+
+## NAC
+## test controlling for sex
+```{r nac - consummatory}
+
+# fb all rpe: HC 0.2595317, p=0.138275, MDD: 0.1287821 p 0.4609434
+pcor_test(
+  df = df_covs2,
+  roi = "rl_accumbens",
+  contrast = "fb_all_rpe",
+  scale = "TEPS.Consummatory",
+  group_col = "group",
+  sex_col = "SUB_gender"
+)
+
+# fb gain rpe: HC 0.3163341, p 0.06835482, MDD: -0.1218136, p 0.4857471
+pcor_test(
+  df = df_covs2,
+  roi = "rl_accumbens",
+  contrast = "fb_gain_rpe",
+  scale = "TEPS.Consummatory",
+  group_col = "group",
+  sex_col = "SUB_gender"
+)
+
+# fb loss rpe: HC 0.1319101 p 0.4570882, MDD: 0.2555815, p 0.138376
+
+pcor_test(
+  df = df_covs2,
+  roi = "rl_accumbens",
+  contrast = "fb_loss_rpe",
+  scale = "TEPS.Consummatory",
+  group_col = "group",
+  sex_col = "SUB_gender"
+)
+```
+
+```{r nac anticipatory}
+# fb all rpe: HC 0.06484988, p=0.7155768, MDD: 0.2118275 p 0.2218601
+pcor_test(
+  df = df_covs2,
+  roi = "rl_accumbens",
+  contrast = "fb_all_rpe",
+  scale = "TEPS.Anticipatory",
+  group_col = "group",
+  sex_col = "SUB_gender"
+)
+
+# fb gain rpe: HC 0.1712651, p 0.3328119, MDD: -0.06345877, p 0.7172339
+pcor_test(
+  df = df_covs2,
+  roi = "rl_accumbens",
+  contrast = "fb_gain_rpe",
+  scale = "TEPS.Anticipatory",
+  group_col = "group",
+  sex_col = "SUB_gender"
+)
+
+# fb loss rpe: HC -0.1269058 p 0.4744836, MDD: 0.3175233, p 0.06306993
+
+pcor_test(
+  df = df_covs2,
+  roi = "rl_accumbens",
+  contrast = "fb_loss_rpe",
+  scale = "TEPS.Anticipatory",
+  group_col = "group",
+  sex_col = "SUB_gender"
+)
+```
+
+## test controlling for age
+
+```{r ant}
+# fb all rpe: HC 0.2338343, p=0.1831835, MDD: 0.02592091 p 0.8824962
+pcor_test(
+  df = df_covs2,
+  roi = "rl_accumbens",
+  contrast = "fb_all_rpe",
+  scale = "TEPS.Consummatory",
+  group_col = "group",
+  sex_col = "SUB_Age"
+)
+
+# fb gain rpe: HC 0.291846, p 0.09397908, MDD: -0.2005064, p 0.2481285
+pcor_test(
+  df = df_covs2,
+  roi = "rl_accumbens",
+  contrast = "fb_gain_rpe",
+  scale = "TEPS.Consummatory",
+  group_col = "group",
+  sex_col = "SUB_Age"
+)
+
+# fb loss rpe: HC 0.09807015 p 0.581095, MDD: 0.2006768, p 0.2477184
+
+pcor_test(
+  df = df_covs2,
+  roi = "rl_accumbens",
+  contrast = "fb_loss_rpe",
+  scale = "TEPS.Consummatory",
+  group_col = "group",
+  sex_col = "SUB_Age"
+)
+```
+
+```{r vta anticipatory}
+# fb all rpe: HC: 0.06839628 p 0.70072 ; MDD 0.123111 p 0.4810775
+pcor_test(
+  df = df_covs2,
+  roi = "rl_accumbens",
+  contrast = "fb_all_rpe",
+  scale = "TEPS.Anticipatory",
+  group_col = "group",
+  sex_col = "SUB_Age"
+)
+
+# fb gain rpe: HC: 0.187625 p 0.2879708 ; MDD -0.104979, p 0.5483925
+pcor_test(
+  df = df_covs2,
+  roi = "rl_accumbens",
+  contrast = "fb_gain_rpe",
+  scale = "TEPS.Anticipatory",
+  group_col = "group",
+  sex_col = "SUB_Age"
+)
+
+# fb loss rpe: HC: -0.1385585, p 0.4345153 ; MDD: 0.2573208, p 0.1356197
+
+pcor_test(
+  df = df_covs2,
+  roi = "rl_accumbens",
+  contrast = "fb_loss_rpe",
+  scale = "TEPS.Anticipatory",
+  group_col = "group",
+  sex_col = "SUB_Age"
+)
+
+```
+
+## test controlling for medication 
+
+```{r}
+# fb all rpe: warning
+pcor_test(
+  df = df_covs2,
+  roi = "rl_accumbens",
+  contrast = "fb_all_rpe",
+  scale = "TEPS.Consummatory",
+  group_col = "group",
+  sex_col = "Medication"
+)
+
+# fb gain rpe: warning
+pcor_test(
+  df = df_covs2,
+  roi = "rl_accumbens",
+  contrast = "fb_gain_rpe",
+  scale = "TEPS.Consummatory",
+  group_col = "group",
+  sex_col = "Medication"
+)
+
+# fb loss rpe: warning
+
+pcor_test(
+  df = df_covs2,
+  roi = "rl_accumbens",
+  contrast = "fb_loss_rpe",
+  scale = "TEPS.Consummatory",
+  group_col = "group",
+  sex_col = "Medication"
+)
+```
+
+## vmPFC
+## test controlling for sex
+```{r vmpfc - consummatory}
+
+# fb all rpe: HC 0.05333303, p=0.7681685, MDD: 0.1704553 p 0.3275835
+pcor_test(
+  df = df_covs2,
+  roi = "vmPFC",
+  contrast = "fb_all_rpe",
+  scale = "TEPS.Consummatory",
+  group_col = "group",
+  sex_col = "SUB_gender"
+)
+
+# fb gain rpe: HC 0.2149226, p 0.2297012, MDD: 0.2364913, p 0.1713799
+pcor_test(
+  df = df_covs2,
+  roi = "vmPFC",
+  contrast = "fb_gain_rpe",
+  scale = "TEPS.Consummatory",
+  group_col = "group",
+  sex_col = "SUB_gender"
+)
+
+# fb loss rpe: HC -0.0739292 p 0.6826308, MDD: -0.0008511212, p 0.9961283
+
+pcor_test(
+  df = df_covs2,
+  roi = "vmPFC",
+  contrast = "fb_loss_rpe",
+  scale = "TEPS.Consummatory",
+  group_col = "group",
+  sex_col = "SUB_gender"
+)
+```
+
+```{r nac anticipatory}
+# fb all rpe: HC -0.1600022, p=0.3737603, MDD: 0.2105215 p 0.2247894
+pcor_test(
+  df = df_covs2,
+  roi = "vmPFC",
+  contrast = "fb_all_rpe",
+  scale = "TEPS.Anticipatory",
+  group_col = "group",
+  sex_col = "SUB_gender"
+)
+
+# fb gain rpe: HC -0.006511016, p 0.9713134, MDD: 0.3677861, p 0.02973073 SIG!
+pcor_test(
+  df = df_covs2,
+  roi = "vmPFC",
+  contrast = "fb_gain_rpe",
+  scale = "TEPS.Anticipatory",
+  group_col = "group",
+  sex_col = "SUB_gender"
+)
+
+# fb loss rpe: HC -0.143508 p 0.4256017, MDD: -0.07066256, p 0.6866776
+
+pcor_test(
+  df = df_covs2,
+  roi = "vmPFC",
+  contrast = "fb_loss_rpe",
+  scale = "TEPS.Anticipatory",
+  group_col = "group",
+  sex_col = "SUB_gender"
+)
+```
+
+## test controlling for age
+
+```{r cons}
+# fb all rpe: HC 0.05747456, p=0.7507138, MDD: 0.1230129 p 0.4814299
+pcor_test(
+  df = df_covs2,
+  roi = "vmPFC",
+  contrast = "fb_all_rpe",
+  scale = "TEPS.Consummatory",
+  group_col = "group",
+  sex_col = "SUB_Age"
+)
+
+# fb gain rpe: HC 0.2017139, p 0.2602937, MDD: 0.2115004, p 0.2225913
+pcor_test(
+  df = df_covs2,
+  roi = "vmPFC",
+  contrast = "fb_gain_rpe",
+  scale = "TEPS.Consummatory",
+  group_col = "group",
+  sex_col = "SUB_Age"
+)
+
+# fb loss rpe: HC -0.05086183 p 0.7786376, MDD: -0.03556113, p 0.8392867
+
+pcor_test(
+  df = df_covs2,
+  roi = "vmPFC",
+  contrast = "fb_loss_rpe",
+  scale = "TEPS.Consummatory",
+  group_col = "group",
+  sex_col = "SUB_Age"
+)
+```
+
+```{r vta anticipatory}
+# fb all rpe: HC: -0.1629218 p 0.3649883 ; MDD 0.179149 p 0.3031372
+pcor_test(
+  df = df_covs2,
+  roi = "vmPFC",
+  contrast = "fb_all_rpe",
+  scale = "TEPS.Anticipatory",
+  group_col = "group",
+  sex_col = "SUB_Age"
+)
+
+# fb gain rpe: HC: -0.03282482 p 0.856099 ; MDD 0.3525793, p 0.0377672 # SIG!
+pcor_test(
+  df = df_covs2,
+  roi = "vmPFC",
+  contrast = "fb_gain_rpe",
+  scale = "TEPS.Anticipatory",
+  group_col = "group",
+  sex_col = "SUB_Age"
+)
+
+# fb loss rpe: HC: -0.1317729, p 0.4647873 ; MDD: -0.09260031, p 0.596754
+
+pcor_test(
+  df = df_covs2,
+  roi = "vmPFC",
+  contrast = "fb_loss_rpe",
+  scale = "TEPS.Anticipatory",
+  group_col = "group",
+  sex_col = "SUB_Age"
+)
+
+```
+
+## test controlling for medication 
+
+```{r}
+# fb all rpe: warning
+pcor_test(
+  df = df_covs2,
+  roi = "vmPFC",
+  contrast = "fb_all_rpe",
+  scale = "TEPS.Consummatory",
+  group_col = "group",
+  sex_col = "Medication"
+)
+
+# fb gain rpe: warning
+pcor_test(
+  df = df_covs2,
+  roi = "vmPFC",
+  contrast = "fb_gain_rpe",
+  scale = "TEPS.Consummatory",
+  group_col = "group",
+  sex_col = "Medication"
+)
+
+# fb loss rpe: warning
+
+pcor_test(
+  df = df_covs2,
+  roi = "vmPFC",
+  contrast = "fb_loss_rpe",
+  scale = "TEPS.Consummatory",
+  group_col = "group",
+  sex_col = "Medication"
+)
+```
+
+
+# omitting medication subjects analysis
+
+Mean differences - none 
+this is "cheeky" but for my own curiosity 
+```{r vta}
+
+roi_analysis(df = df_covs_nomed, roi = "vta_mni", contrast = "fb_all_rpe", group = "group") # p = 0.9333
+
+roi_analysis(df = df_covs_nomed, roi = "vta_mni", contrast = "fb_gain_rpe", group = "group") # p = 0.2288
+
+roi_analysis(df = df_covs_nomed, roi = "vta_mni", contrast = "fb_loss_rpe", group = "group") # p = 0.6633
+
+```
+
+correlation with teps
+```{r}
+
+ca_analysis(df = df_covs_nomed, roi = "vta_mni", contrast = "fb_all_rpe", 
+            scale = "TEPS.Consummatory", group_col = "group") # this reqs spearman, MDD: p=0.7848 
+
+ca_analysis(df = df_covs_nomed, roi = "vta_mni", contrast = "fb_gain_rpe", 
+            scale = "TEPS.Consummatory", group_col = "group") # MDD: p = 0.1941, R = 0.321
+
+ca_analysis(df = df_covs_nomed, roi = "vta_mni", contrast = "fb_loss_rpe", 
+            scale = "TEPS.Consummatory", group_col = "group") # MDD: p = .563, R = -0.1460791
+
+```
+
+
+
+#testing function works!
+- even when controlling for age, sex, medication -- no correlation with VTA signal
+```{r testing function works!}
+
+vta_sub <- df_covs2 %>% filter(ROI == "vta_mni" & group == "MDD") 
+
+res <-
+  pcor.test(vta_sub$TEPS.Consummatory,
+            vta_sub$fb_all_rpe,
+            vta_sub$SUB_gender,
+            method = "pearson")
+res$estimate
+
+## Consummatory
+# R: -0.1127149 p: 0.5322819
+pcor.test(
+  vta_sub$TEPS.Consummatory,
+  vta_sub$fb_all_rpe,
+  list(vta_sub$SUB_gender, vta_sub$SUB_Age, vta_sub$Medication)
+  )
+
+# R: 0.08036353 p: 0.6566284
+pcor.test(
+  vta_sub$TEPS.Consummatory,
+  vta_sub$fb_gain_rpe,
+  list(vta_sub$SUB_gender, vta_sub$SUB_Age, vta_sub$Medication)
+  )
+
+# R: -0.1999885 p: 0.2644787
+pcor.test(
+  vta_sub$TEPS.Consummatory,
+  vta_sub$fb_loss_rpe,
+  list(vta_sub$SUB_gender, vta_sub$SUB_Age, vta_sub$Medication)
+  )
+
+## Anticipatory 
+# R: -0.0374181 p: 0.8362171
+pcor.test(
+  vta_sub$TEPS.Anticipatory,
+  vta_sub$fb_all_rpe,
+  list(vta_sub$SUB_gender, vta_sub$SUB_Age, vta_sub$Medication)
+  )
+
+# R: 0.1922603 p: 0.2837625
+pcor.test(
+  vta_sub$TEPS.Anticipatory,
+  vta_sub$fb_gain_rpe,
+  list(vta_sub$SUB_gender, vta_sub$SUB_Age, vta_sub$Medication)
+  )
+
+# R: -0.2010764 p: 0.2618349
+pcor.test(
+  vta_sub$TEPS.Anticipatory,
+  vta_sub$fb_loss_rpe,
+  list(vta_sub$SUB_gender, vta_sub$SUB_Age, vta_sub$Medication)
+)
+
+```
+
+```{r nac}
+nac_sub <- df_covs2 %>% filter(ROI == "rl_accumbens" & group == "MDD") 
+
+## Consummatory
+# R: 0.1174166 p: 0.5152038
+pcor.test(
+  nac_sub$TEPS.Consummatory,
+  nac_sub$fb_all_rpe,
+  list(nac_sub$SUB_gender, nac_sub$SUB_Age, nac_sub$Medication)
+  )
+
+# R: -0.1475583 p: 0.4125162
+pcor.test(
+  nac_sub$TEPS.Consummatory,
+  nac_sub$fb_gain_rpe,
+  list(nac_sub$SUB_gender, nac_sub$SUB_Age, nac_sub$Medication)
+  )
+
+# R: 0.2522138 p: 0.1567744 -- only trending result if we can even call it that
+pcor.test(
+  nac_sub$TEPS.Consummatory,
+  nac_sub$fb_loss_rpe,
+  list(nac_sub$SUB_gender, nac_sub$SUB_Age, nac_sub$Medication)
+  )
+
+## Anticipatory 
+# R: 0.1714182 p: 0.3401652
+pcor.test(
+  nac_sub$TEPS.Anticipatory,
+  nac_sub$fb_all_rpe,
+  list(nac_sub$SUB_gender, nac_sub$SUB_Age, nac_sub$Medication)
+  )
+
+# R: -0.1097372 p: 0.5432365
+pcor.test(
+  nac_sub$TEPS.Anticipatory,
+  nac_sub$fb_gain_rpe,
+  list(nac_sub$SUB_gender, nac_sub$SUB_Age, nac_sub$Medication)
+  )
+
+# R: 0.294399 p: 0.096298
+pcor.test(
+  nac_sub$TEPS.Anticipatory,
+  nac_sub$fb_loss_rpe,
+  list(nac_sub$SUB_gender, nac_sub$SUB_Age, nac_sub$Medication)
+  )
+
+```
+
+
+```{r vmpfc}
+vmpfc_sub <- df_covs2 %>% filter(ROI == "vmPFC" & group == "MDD") 
+
+## Consummatory
+# R: 0.1657239 p: 0.3566856
+pcor.test(
+  vmpfc_sub$TEPS.Consummatory,
+  vmpfc_sub$fb_all_rpe,
+  list(vmpfc_sub$SUB_gender, vmpfc_sub$SUB_Age, vmpfc_sub$Medication)
+  )
+
+# R: 0.2412591 p: 0.1761937
+pcor.test(
+  vmpfc_sub$TEPS.Consummatory,
+  vmpfc_sub$fb_gain_rpe,
+  list(vmpfc_sub$SUB_gender, vmpfc_sub$SUB_Age, vmpfc_sub$Medication)
+  )
+
+# R: -0.005566784 p: 0.9754722
+pcor.test(
+  vmpfc_sub$TEPS.Consummatory,
+  vmpfc_sub$fb_loss_rpe,
+  list(vmpfc_sub$SUB_gender, vmpfc_sub$SUB_Age, vmpfc_sub$Medication)
+  )
+
+## Anticipatory 
+# R: 0.2009763 p: 0.2620774
+pcor.test(
+  vmpfc_sub$TEPS.Anticipatory,
+  vmpfc_sub$fb_all_rpe,
+  list(vmpfc_sub$SUB_gender, vmpfc_sub$SUB_Age, vmpfc_sub$Medication)
+  )
+
+# R: 0.3649113 p: 0.036794
+pcor.test(
+  vmpfc_sub$TEPS.Anticipatory,
+  vmpfc_sub$fb_gain_rpe,
+  list(vmpfc_sub$SUB_gender, vmpfc_sub$SUB_Age, vmpfc_sub$Medication)
+  )
+
+# R: -0.07141358 p: 0.6928971
+pcor.test(
+  vmpfc_sub$TEPS.Anticipatory,
+  vmpfc_sub$fb_loss_rpe,
+  list(vmpfc_sub$SUB_gender, vmpfc_sub$SUB_Age, vmpfc_sub$Medication)
+  )
+
+```
+
+# Regressions controlling for covariates
+- like t-test but with covariates included
+roi_o_w = 518 observations and used for t-test 
+
+```{r}
+roi_covs <- merge(roi_o_w, covs)
+length(unique(roi_covs$subj_ID)) # N = 74
+```
+
+```{r vta }
+
+vta_test <- roi_covs %>% filter(ROI == "vta_mni") 
+
+# FB GAIN
+test <- lm(vta_test$fb_gain_rpe ~ vta_test$group) # p = 0.228, t = -1.216, same as t-test
+summary(test)
+
+# what does adding sex do to these results? makes the relationship weaker
+test <- lm(vta_test$fb_gain_rpe ~ vta_test$group + vta_test$SUB_gender) # p = 0.292, t = -1.062
+summary(test)
+
+# add age
+test <- lm(vta_test$fb_gain_rpe ~ vta_test$group + vta_test$SUB_gender + vta_test$SUB_Age) # p = 0.317, t = -1.007
+summary(test)
+
+# add medication 
+test <-
+  lm(
+    vta_test$fb_gain_rpe ~ vta_test$group + vta_test$SUB_gender + vta_test$SUB_Age +
+      vta_test$Medication
+  ) # p = 0.201, t = -1.291
+summary(test)
+
+# FB LOSS
+test <- lm(vta_test$fb_loss_rpe ~ vta_test$group + vta_test$SUB_gender) # p = 0.521, t = 0.646
+summary(test)
+
+test <- lm(vta_test$fb_loss_rpe ~ vta_test$group + vta_test$SUB_gender + vta_test$SUB_Age) 
+summary(test) # p = 0.482, t = 0.708
+
+test <- lm(vta_test$fb_loss_rpe ~ vta_test$group + vta_test$SUB_gender + vta_test$SUB_Age
+           + vta_test$Medication) 
+summary(test) # p = 0.643, t = 0.465
+
+# FB FULL
+test <- lm(vta_test$fb_all_rpe ~ vta_test$group + vta_test$SUB_gender) 
+summary(test) # p = 0.572, t = -0.567
+
+test <- lm(vta_test$fb_all_rpe ~ vta_test$group + vta_test$SUB_gender + vta_test$SUB_Age) 
+summary(test) # p = 0.650, t = -0.455
+
+test <- lm(vta_test$fb_all_rpe ~ vta_test$group + vta_test$SUB_gender + vta_test$SUB_Age
+           + vta_test$Medication) 
+summary(test) # p = 0.406, t = -0.835
+
+
+```
+
+```{r nac}
+nac_test <- roi_covs %>% filter(ROI == "rl_accumbens") 
+
+# FB GAIN
+test <- lm(nac_test$fb_gain_rpe ~ nac_test$group) # p = 0.16237, t = -1.412, same as t-test
+summary(test)
+
+# what does adding sex do to these results? makes the relationship weaker
+test <- lm(nac_test$fb_gain_rpe ~ nac_test$group + nac_test$SUB_gender) # p = 0.2483, t = -1.164
+summary(test)
+
+# add age
+test <- lm(nac_test$fb_gain_rpe ~ nac_test$group + nac_test$SUB_gender + nac_test$SUB_Age) # p = 0.2024, t = -1.287
+summary(test)
+
+# add medication 
+test <-
+  lm(
+    nac_test$fb_gain_rpe ~ nac_test$group + nac_test$SUB_gender + nac_test$SUB_Age +
+      nac_test$Medication
+  ) 
+summary(test) # p = 0.9657, t = 0.043 gender is sig. and medication
+
+# FB LOSS
+test <- lm(nac_test$fb_loss_rpe ~ nac_test$group + nac_test$SUB_gender) # p = 0.2035, t = -1.283
+summary(test)
+
+test <- lm(nac_test$fb_loss_rpe ~ nac_test$group + nac_test$SUB_gender + nac_test$SUB_Age) 
+summary(test) # p = .1446, t = -1.475
+
+test <- lm(nac_test$fb_loss_rpe ~ nac_test$group + nac_test$SUB_gender + nac_test$SUB_Age
+           + nac_test$Medication) 
+summary(test) # p = 0.5638, t = -0.580
+
+# FB FULL
+test <- lm(nac_test$fb_all_rpe ~ nac_test$group + nac_test$SUB_gender) 
+summary(test) # p = 0.1034, t = -1.650
+
+test <- lm(nac_test$fb_all_rpe ~ nac_test$group + nac_test$SUB_gender + nac_test$SUB_Age) 
+summary(test) # p = 0.0642, t = -1.880 # group is trending, with sex as a significant predictor
+
+test <- lm(nac_test$fb_all_rpe ~ nac_test$group + nac_test$SUB_gender + nac_test$SUB_Age
+           + nac_test$Medication) 
+summary(test) # p = 0.68077, t = -0.413, sex and meds are sig
+
+```
+
+# Are RPEs from different regions correlated?
+- this is inspired by 2018 RPE paper
+
+```{r}
+vta_rpe <- roi_o_w %>% filter(ROI == "vta_mni" & group == "MDD") %>% dplyr::select('fb_gain_rpe')
+names(vta_rpe)[names(vta_rpe) == "fb_gain_rpe"] <- "vta_gain_rpe"
+
+nac_rpe <- roi_o_w %>% filter(ROI == "rl_accumbens" & group == "MDD") %>%
+  dplyr::select('fb_gain_rpe')
+names(nac_rpe)[names(nac_rpe) == "fb_gain_rpe"] <- "nac_gain_rpe"
+
+rpe_df <- cbind(nac_rpe, vta_rpe)
+```
+
+
+```{r}
+
+# as VTA loss RPE signal gets stronger, so does the NAC loss RPE in MDD; p-value = 0.03371
+
+ggplot(rpe_df, aes(x=vta_gain_rpe, y=nac_gain_rpe)) +
+  geom_point(size = 5) + 
+  geom_smooth(method=lm, se = FALSE) + 
+  scale_color_manual(values=c('burlywood2')) + 
+  labs(x='VTA gain RPE', y='NAC gain RPE', title='') +
+  theme_light() +
+  theme(axis.text = element_text(size = 16)) + 
+  theme(legend.position=c(0.1,0.9), legend.justification=c(0.1,0.9)) 
+
+cor.test(rpe_df$vta_gain_rpe, rpe_df$nac_gain_rpe)
+
+```
+
+```{r}
+
+```
+
+Exclusion for < 50% correct responses
+https://www.nature.com/articles/s41386-018-0032-x#Sec11
